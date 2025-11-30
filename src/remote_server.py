@@ -14,6 +14,23 @@ import io
 import pystray
 from pystray import MenuItem as item
 import os
+import sys
+import tempfile
+
+# --- 资源路径处理 ---
+def get_icon_path():
+    """获取图标路径，支持开发环境和打包后的环境"""
+    # 如果是 PyInstaller 打包的程序
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        icon_path = os.path.join(sys._MEIPASS, 'icon.ico')
+        if os.path.exists(icon_path):
+            return icon_path
+
+    # 开发环境或当前目录
+    if os.path.exists('icon.ico'):
+        return 'icon.ico'
+
+    return None
 
 # --- Flask 应用配置 ---
 app = Flask(__name__)
@@ -308,9 +325,10 @@ class ServerApp:
 
         # 设置窗口图标
         try:
-            if os.path.exists('icon.ico'):
-                self.root.iconbitmap('icon.ico')
-        except Exception:
+            icon_path = get_icon_path()
+            if icon_path:
+                self.root.iconbitmap(icon_path)
+        except Exception as e:
             pass
 
         # 系统托盘图标
@@ -406,13 +424,17 @@ class ServerApp:
         except Exception as e:
             print(f"Error: {e}")
 
-    def generate_qr(self, url):
+    def generate_qr(self, url, target_size=200):
+        """生成二维码图像，自动调整大小以适应目标尺寸"""
         # 生成二维码图像
-        qr = qrcode.QRCode(version=1, box_size=8, border=2)
+        qr = qrcode.QRCode(version=1, box_size=10, border=2)
         qr.add_data(url)
         qr.make(fit=True)
         img = qr.make_image(fill='black', back_color='white')
-        
+
+        # 调整图像大小以适应显示区域
+        img = img.resize((target_size, target_size), Image.Resampling.LANCZOS)
+
         # 转换为 Tkinter 可用的格式
         img_tk = ImageTk.PhotoImage(img)
         return img_tk
@@ -442,13 +464,14 @@ class ServerApp:
         t.start()
 
         self.is_running = True
+        self.listen_on_all = host_ip.startswith('0.0.0.0')  # 记录是否监听所有网卡
         self.btn_start.config(text="停止服务并退出", state='normal', bg="#ff3b30")
 
         # 禁用端口输入框
         self.port_entry.config(state='disabled', bg="#f0f0f0")
 
         # 如果选择的是具体 IP，禁用 IP 下拉框
-        if not host_ip.startswith('0.0.0.0'):
+        if not self.listen_on_all:
             self.ip_combo.config(state='disabled')
 
         # 处理 "0.0.0.0 (所有网卡)" 的情况
@@ -460,11 +483,13 @@ class ServerApp:
             self.current_url = f"http://{all_ips[0]}:{port}" if all_ips else ""
             self.tip_label.config(text="")
         else:
-            # 生成并显示二维码
+            # 生成并显示二维码（动态调整大小）
             url = f"http://{host_ip}:{port}"
             try:
-                self.qr_img = self.generate_qr(url) # 必须保持引用，否则会被垃圾回收
-                self.qr_label.config(image=self.qr_img, width=200, height=200, bg="white", text='', font=("Arial", 10))
+                # 获取当前窗口大小，动态计算二维码尺寸
+                qr_size = min(self.root.winfo_width() - 80, 250)  # 最大250px
+                self.qr_img = self.generate_qr(url, target_size=qr_size) # 必须保持引用，否则会被垃圾回收
+                self.qr_label.config(image=self.qr_img, width=qr_size, height=qr_size, bg="white", text='', font=("Arial", 10))
             except Exception as e:
                 self.qr_label.config(text=f"二维码生成失败\n{e}")
 
@@ -475,12 +500,12 @@ class ServerApp:
 
     def on_ip_changed(self, event=None):
         """当 IP 改变时更新二维码"""
-        # 只有在运行中且选择了 0.0.0.0 时才允许切换
+        # 只有在运行中且启动时选择了 0.0.0.0 才允许切换
         if not self.is_running:
             return
 
-        # 如果不是 0.0.0.0 模式，不允许切换
-        if not self.ip_var.get().startswith('0.0.0.0'):
+        # 如果启动时不是 0.0.0.0 模式，不允许切换
+        if not hasattr(self, 'listen_on_all') or not self.listen_on_all:
             return
 
         host_ip = self.ip_var.get()
@@ -495,25 +520,29 @@ class ServerApp:
             self.current_url = f"http://{all_ips[0]}:{port}" if all_ips else ""
             self.tip_label.config(text="")
         else:
-            # 生成并显示二维码
+            # 生成并显示二维码（动态调整大小）
             url = f"http://{host_ip}:{port}"
             try:
-                self.qr_img = self.generate_qr(url)
-                self.qr_label.config(image=self.qr_img, width=200, height=200, bg="white", text='', font=("Arial", 10))
+                # 获取当前窗口大小，动态计算二维码尺寸
+                qr_size = min(self.root.winfo_width() - 80, 250)  # 最大250px
+                self.qr_img = self.generate_qr(url, target_size=qr_size)
+                self.qr_label.config(image=self.qr_img, width=qr_size, height=qr_size, bg="white", text='', font=("Arial", 10))
             except Exception as e:
                 self.qr_label.config(text=f"二维码生成失败\n{e}")
 
             # 显示文本链接
             self.url_label.config(text=url)
             self.current_url = url
-            self.tip_label.config(text="提示：如无法访问，请切换 IP 或端口重新扫码")
             self.tip_label.config(text="提示：如无法访问，请切换 IP 重新扫码")
 
     def create_tray_icon(self):
         """创建系统托盘图标"""
-        # 尝试加载 icon.png，如果不存在则创建简单图标
+        # 尝试加载 icon.ico，保持与窗口图标一致
         try:
-            if os.path.exists('icon.png'):
+            icon_path = get_icon_path()
+            if icon_path:
+                icon_image = Image.open(icon_path)
+            elif os.path.exists('icon.png'):
                 icon_image = Image.open('icon.png')
             else:
                 # 创建一个简单的蓝色图标
