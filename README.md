@@ -81,25 +81,15 @@ qaa-airtype/
 └── README.md               # 项目说明
 ```
 
-## 🤝 贡献
-
-欢迎提交 Issue 和 Pull Request！
-
-## 📄 开源协议
-
-本项目采用 [MIT License](LICENSE) 开源协议。
-
 ## 🙏 致谢
 
 - **Gemini**：核心程序编写
 - **Claude**：项目标准化设计
 
-## 📮 反馈
-
-有问题或建议？提交 [Issue](https://github.com/QAA-Tools/qaa-airtype/issues)
-
 ---
 
 <div align="center">
-Made with ❤️ for better voice input experience
+
+MIT License · Made with ❤️
+
 </div>
