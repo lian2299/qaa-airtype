@@ -221,7 +221,8 @@ def type_text():
         if text:
             pyperclip.copy(text)
             time.sleep(0.1)
-            pyautogui.hotkey(PASTE_KEY, 'v')
+            # 使用 Shift+Insert 粘贴（兼容所有应用，包括终端）
+            pyautogui.hotkey('shift', 'insert')
             return {'success': True}
     except Exception:
         pass
