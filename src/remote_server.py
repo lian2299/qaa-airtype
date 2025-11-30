@@ -1,7 +1,7 @@
 import socket
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from flask import Flask, request, render_template_string
 import pyautogui
 import pyperclip
@@ -208,6 +208,7 @@ def type_text():
     return {'success': False}
 
 def get_host_ip():
+    """获取主要的本机 IP 地址"""
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(('8.8.8.8', 80))
@@ -217,6 +218,35 @@ def get_host_ip():
     finally:
         s.close()
     return ip
+
+def get_all_ips():
+    """获取所有可用的本机 IP 地址"""
+    ips = []
+    try:
+        # 获取主机名
+        hostname = socket.gethostname()
+        # 获取所有 IP 地址
+        addrs = socket.getaddrinfo(hostname, None)
+        for addr in addrs:
+            ip = addr[4][0]
+            # 只保留 IPv4 地址，排除回环地址
+            if ':' not in ip and ip != '127.0.0.1':
+                if ip not in ips:
+                    ips.append(ip)
+    except Exception:
+        pass
+
+    # 如果没有找到任何 IP，添加默认值
+    if not ips:
+        ips.append('127.0.0.1')
+
+    # 将主要 IP 放在第一位
+    main_ip = get_host_ip()
+    if main_ip in ips:
+        ips.remove(main_ip)
+    ips.insert(0, main_ip)
+
+    return ips
 
 # --- GUI 主程序 ---
 class ServerApp:
@@ -234,7 +264,8 @@ class ServerApp:
         y = (screen_height - 500) // 2
         self.root.geometry(f"380x500+{x}+{y}")
 
-        self.ip_var = tk.StringVar(value=get_host_ip())
+        self.all_ips = get_all_ips()
+        self.ip_var = tk.StringVar(value=self.all_ips[0])
         self.port_var = tk.StringVar(value="5000")
         self.is_running = False
 
@@ -244,7 +275,9 @@ class ServerApp:
 
         # IP 和 端口 设置
         tk.Label(main_frame, text="本机 IP:", font=("Arial", 10, "bold")).pack(anchor='w')
-        tk.Entry(main_frame, textvariable=self.ip_var, state='readonly', font=("Arial", 10), bg="#f0f0f0").pack(fill='x', pady=(0, 10))
+        self.ip_combo = ttk.Combobox(main_frame, textvariable=self.ip_var,
+                                     values=self.all_ips, font=("Arial", 10), state='normal')
+        self.ip_combo.pack(fill='x', pady=(0, 10))
 
         tk.Label(main_frame, text="端口 (Port):", font=("Arial", 10, "bold")).pack(anchor='w')
         tk.Entry(main_frame, textvariable=self.port_var, font=("Arial", 10)).pack(fill='x', pady=(0, 15))
