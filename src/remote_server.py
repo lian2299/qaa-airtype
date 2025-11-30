@@ -392,7 +392,7 @@ class ServerApp:
 
     def run_flask(self, host, port):
         try:
-            app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
+            app.run(host=host, port=port, debug=False, use_reloader=False)
         except Exception as e:
             print(f"Error: {e}")
 
@@ -421,8 +421,14 @@ class ServerApp:
         port = int(port_str)
         host_ip = self.ip_var.get()
 
+        # 确定监听地址
+        if host_ip.startswith('0.0.0.0'):
+            listen_host = '0.0.0.0'  # 监听所有网卡
+        else:
+            listen_host = host_ip  # 只监听指定 IP
+
         # 启动 Flask 线程
-        t = threading.Thread(target=self.run_flask, args=('0.0.0.0', port), daemon=True)
+        t = threading.Thread(target=self.run_flask, args=(listen_host, port), daemon=True)
         t.start()
 
         self.is_running = True
