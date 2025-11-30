@@ -447,6 +447,10 @@ class ServerApp:
         # 禁用端口输入框
         self.port_entry.config(state='disabled', bg="#f0f0f0")
 
+        # 如果选择的是具体 IP，禁用 IP 下拉框
+        if not host_ip.startswith('0.0.0.0'):
+            self.ip_combo.config(state='disabled')
+
         # 处理 "0.0.0.0 (所有网卡)" 的情况
         if host_ip.startswith('0.0.0.0'):
             # 显示所有可用的 IP 地址
@@ -471,7 +475,12 @@ class ServerApp:
 
     def on_ip_changed(self, event=None):
         """当 IP 改变时更新二维码"""
+        # 只有在运行中且选择了 0.0.0.0 时才允许切换
         if not self.is_running:
+            return
+
+        # 如果不是 0.0.0.0 模式，不允许切换
+        if not self.ip_var.get().startswith('0.0.0.0'):
             return
 
         host_ip = self.ip_var.get()
