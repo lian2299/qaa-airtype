@@ -335,7 +335,6 @@ pip install websockets cryptography</code></pre>
             <h2>部署 cfchat Workers</h2>
             <p>cfchat 是一个基于 Cloudflare Workers 的实时消息转发服务。你需要部署自己的实例才能使用 CF 模式。</p>
 
-            <h3>方式一：一键部署（推荐）</h3>
             <div class="steps">
                 <div class="step">
                     <strong>注册 Cloudflare 账号</strong>
@@ -359,24 +358,6 @@ pip install websockets cryptography</code></pre>
                 <div class="step">
                     <strong>获取地址</strong>
                     <p>部署完成后，你会得到一个地址，如 <code>https://cfchat-xxx.pages.dev</code></p>
-                </div>
-            </div>
-
-            <h3>方式二：命令行部署</h3>
-            <div class="steps">
-                <div class="step">
-                    <strong>安装 Wrangler</strong>
-                    <pre><code>npm install -g wrangler</code></pre>
-                </div>
-                <div class="step">
-                    <strong>登录 Cloudflare</strong>
-                    <pre><code>wrangler login</code></pre>
-                </div>
-                <div class="step">
-                    <strong>克隆并部署</strong>
-                    <pre><code>git clone https://github.com/cndaqiang/cfchat.git
-cd cfchat
-wrangler deploy</code></pre>
                 </div>
             </div>
 

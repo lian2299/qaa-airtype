@@ -36,8 +36,7 @@ QAA AirType 是一个轻量级的远程输入工具，让你可以通过手机�
 - 🌐 **局域网模式**：无需互联网，同一 WiFi 下即可使用
 - ☁️ **Cloudflare 模式**：自建免费 Workers 服务，突破局域网限制，手机流量也能用
 - 🔽 **系统托盘**：最小化到托盘，不占用任务栏
-
-📖 **详细文档**：[https://qaa-tools.github.io/qaa-airtype/](https://qaa-tools.github.io/qaa-airtype/)
+- 📖 **详细文档**：[qaa-tools.github.io/qaa-airtype](https://qaa-tools.github.io/qaa-airtype/)
 
 ## 🚀 快速开始
 
