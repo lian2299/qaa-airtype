@@ -21,6 +21,15 @@ import asyncio
 import hashlib
 import json
 
+# 尝试导入 clipman（避免触发剪贴板历史工具如 Ditto）
+try:
+    import clipman
+    CLIPMAN_AVAILABLE = True
+    print("clipman library available - clipboard history tools will not be triggered")
+except ImportError:
+    CLIPMAN_AVAILABLE = False
+    print("clipman not available - using pyperclip (may trigger clipboard history tools)")
+
 # CF 模式依赖（可选）
 try:
     import websockets
@@ -997,6 +1006,37 @@ auto_mute_enabled = False  # 默认关闭自动静音功能
 original_mute_state = False  # 记录原始静音状态
 current_muted_by_app = False  # 记录当前是否由应用控制静音
 
+# 粘贴和剪贴板配置
+use_ctrl_v = False  # False: 使用 Shift+Insert, True: 使用 Ctrl+V
+preserve_clipboard = False  # 是否保护剪贴板（不覆盖）
+auto_minimize = False  # 启动后自动最小化
+
+
+# --- 剪贴板操作包装函数（支持 clipman 避免触发 Ditto 等工具）---
+def clipboard_get():
+    """获取剪贴板内容（优先使用 clipman 避免触发 Ditto）"""
+    if CLIPMAN_AVAILABLE:
+        try:
+            clipman.init()
+            return clipman.get()
+        except Exception as e:
+            print(f"clipman.get() failed: {e}, falling back to pyperclip")
+    # 回退到 pyperclip
+    return pyperclip.paste()
+
+
+def clipboard_set(text):
+    """设置剪贴板内容（优先使用 clipman 避免触发 Ditto）"""
+    if CLIPMAN_AVAILABLE:
+        try:
+            clipman.init()
+            clipman.set(text)
+            return
+        except Exception as e:
+            print(f"clipman.set() failed: {e}, falling back to pyperclip")
+    # 回退到 pyperclip
+    pyperclip.copy(text)
+
 def set_system_mute_windows(mute: bool) -> bool:
     """控制 Windows 系统音量静音状态（不显示音量条）"""
     if not IS_WINDOWS:
@@ -1051,6 +1091,27 @@ def set_system_mute_windows(mute: bool) -> bool:
             return False
 
 
+def ensure_insert_mode_reset():
+    """确保不在覆盖模式（检查并重置 Insert 状态）"""
+    if not IS_WINDOWS:
+        return
+    
+    try:
+        user32 = ctypes.windll.user32
+        insert_state = user32.GetKeyState(VK_INSERT)
+        
+        # 低位为1表示覆盖模式被激活
+        if insert_state & 0x0001:
+            insert_scan = user32.MapVirtualKeyW(VK_INSERT, MAPVK_VK_TO_VSC)
+            # 按一次 Insert 切换回插入模式
+            user32.keybd_event(VK_INSERT, insert_scan, KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY, 0)
+            time.sleep(0.01)
+            user32.keybd_event(VK_INSERT, insert_scan, KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+            print("Detected overwrite mode, reset to insert mode")
+    except Exception as e:
+        print(f"Check Insert state failed: {e}")
+
+
 def send_shift_insert_windows():
     """使用 Windows API 发送 Shift+Insert 组合键（使用扫描码，兼容终端）"""
     if not IS_WINDOWS:
@@ -1089,31 +1150,108 @@ def send_shift_insert_windows():
         shift_pressed = False
 
         return True
+        
     except Exception as e:
         print(f"Windows API error: {e}")
-        # 确保释放所有已按下的键，防止 Insert 键单独触发导致进入插入模式
+        return False
+        
+    finally:
+        # 使用 finally 确保清理一定执行
         if user32 and shift_scan is not None and insert_scan is not None:
             try:
+                # 强制释放所有可能按下的键
                 if insert_pressed:
-                    # 释放 Insert 键（如果已按下）
                     user32.keybd_event(VK_INSERT, insert_scan, KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.02)
                 if shift_pressed:
-                    # 释放 Shift 键（如果已按下）
                     user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.02)
             except Exception as cleanup_error:
                 print(f"Error during key cleanup: {cleanup_error}")
+
+
+def send_ctrl_v_windows():
+    """使用 Windows API 发送 Ctrl+V 组合键"""
+    if not IS_WINDOWS:
+        return False
+
+    try:
+        user32 = ctypes.windll.user32
+        VK_CONTROL = 0x11
+        VK_V = 0x56
+        
+        ctrl_scan = user32.MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC)
+        v_scan = user32.MapVirtualKeyW(VK_V, MAPVK_VK_TO_VSC)
+        
+        # 按下 Ctrl
+        user32.keybd_event(VK_CONTROL, ctrl_scan, KEYEVENTF_SCANCODE, 0)
+        time.sleep(0.05)
+        
+        # 按下 V
+        user32.keybd_event(VK_V, v_scan, KEYEVENTF_SCANCODE, 0)
+        time.sleep(0.02)
+        
+        # 释放 V
+        user32.keybd_event(VK_V, v_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+        time.sleep(0.02)
+        
+        # 释放 Ctrl
+        user32.keybd_event(VK_CONTROL, ctrl_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+        
+        return True
+    except Exception as e:
+        print(f"Ctrl+V error: {e}")
         return False
 
 
 def paste_text(text):
     """复制到剪切板并粘贴"""
-    pyperclip.copy(text)
+    global use_ctrl_v, preserve_clipboard
+    
+    # 如果启用剪贴板保护，保存原内容
+    clipboard_saved = False
+    original_clipboard = None
+    if preserve_clipboard:
+        try:
+            original_clipboard = clipboard_get()
+            clipboard_saved = True
+            print(f"[Clipboard] Saved original content (length: {len(original_clipboard) if original_clipboard else 0})")
+        except Exception as e:
+            print(f"[Clipboard] Failed to save: {e}")
+    
+    # 复制文本到剪贴板
+    clipboard_set(text)
     time.sleep(0.1)
+    
+    # 根据配置选择粘贴方式
     if IS_WINDOWS:
-        if not send_shift_insert_windows():
-            pyautogui.hotkey('shift', 'insert')
+        if use_ctrl_v:
+            # 使用 Ctrl+V 粘贴
+            send_ctrl_v_windows()
+        else:
+            # 使用 Shift+Insert 粘贴
+            send_shift_insert_windows()
+            # 检查并重置 Insert 状态
+            ensure_insert_mode_reset()
     else:
-        pyautogui.hotkey('shift', 'insert')
+        # Mac/Linux
+        if use_ctrl_v:
+            pyautogui.hotkey('ctrl', 'v')
+        else:
+            pyautogui.hotkey('shift', 'insert')
+    
+    # 如果启用剪贴板保护，恢复原内容（增加等待时间）
+    if preserve_clipboard and clipboard_saved:
+        time.sleep(0.15)  # 增加等待时间到 150ms，确保粘贴操作完成
+        try:
+            if original_clipboard is not None:
+                clipboard_set(original_clipboard)
+            else:
+                # 如果原内容是 None，清空剪贴板
+                clipboard_set('')
+            print(f"[Clipboard] Restored original content")
+        except Exception as e:
+            print(f"[Clipboard] Failed to restore: {e}")
 
 
 # --- CF 模式：cfchat 加密协议 ---
@@ -1388,19 +1526,66 @@ def type_text():
         # 发送文本
         text = data.get('text', '')
         if text:
-            pyperclip.copy(text)
+            global use_ctrl_v, preserve_clipboard
+            
+            # 如果启用剪贴板保护，保存原内容
+            clipboard_saved = False
+            original_clipboard = None
+            if preserve_clipboard:
+                try:
+                    original_clipboard = clipboard_get()
+                    clipboard_saved = True
+                    print(f"[Clipboard] Saved original content (length: {len(original_clipboard) if original_clipboard else 0})")
+                except Exception as e:
+                    print(f"[Clipboard] Failed to save: {e}")
+            
+            # 复制文本到剪贴板
+            clipboard_set(text)
             time.sleep(0.1)
 
-            # 使用 Shift+Insert 粘贴（兼容所有应用，包括终端）
+            # 根据配置选择粘贴方式
             if IS_WINDOWS:
-                # Windows: 使用 Windows API 直接发送键盘事件（解决子线程问题）
-                success = send_shift_insert_windows()
+                if use_ctrl_v:
+                    # 使用 Ctrl+V 粘贴
+                    success = send_ctrl_v_windows()
+                else:
+                    # 使用 Shift+Insert 粘贴（兼容终端）
+                    success = send_shift_insert_windows()
+                    # 检查并重置 Insert 状态（防止停留在覆盖模式）
+                    ensure_insert_mode_reset()
+                
                 if not success:
-                    # 如果 Windows API 失败，回退到 pyautogui
-                    pyautogui.hotkey('shift', 'insert')
+                    print("Paste failed: Windows API call failed")
+                    # 恢复剪贴板后返回错误
+                    if preserve_clipboard and clipboard_saved:
+                        try:
+                            if original_clipboard is not None:
+                                clipboard_set(original_clipboard)
+                            else:
+                                clipboard_set('')
+                            print("[Clipboard] Restored after failure")
+                        except:
+                            pass
+                    return {'success': False, 'error': 'Paste failed'}
             else:
                 # Mac/Linux: 使用 pyautogui
-                pyautogui.hotkey('shift', 'insert')
+                if use_ctrl_v:
+                    pyautogui.hotkey('ctrl', 'v')
+                else:
+                    pyautogui.hotkey('shift', 'insert')
+            
+            # 如果启用剪贴板保护，恢复原内容（增加等待时间）
+            if preserve_clipboard and clipboard_saved:
+                time.sleep(0.15)  # 增加等待时间到 150ms，确保粘贴操作完成
+                try:
+                    if original_clipboard is not None:
+                        clipboard_set(original_clipboard)
+                    else:
+                        # 如果原内容是 None，清空剪贴板
+                        clipboard_set('')
+                    print("[Clipboard] Restored original content")
+                except Exception as e:
+                    print(f"[Clipboard] Failed to restore: {e}")
 
             return {'success': True}
     except Exception as e:
@@ -1497,10 +1682,10 @@ class ServerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("QAA AirType")
-        # 增加高度以容纳二维码
-        self.root.geometry("512x640")
+        # 增加高度以容纳配置选项和二维码
+        self.root.geometry("512x720")
         self.root.resizable(True, True)
-        self.root.minsize(380, 480)  # 最小尺寸
+        self.root.minsize(380, 560)  # 最小尺寸
 
         # 绑定窗口关闭事件（正常退出）
         self.root.protocol('WM_DELETE_WINDOW', self.quit_app)
@@ -1521,8 +1706,8 @@ class ServerApp:
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         x = (screen_width - 512) // 2
-        y = (screen_height - 640) // 2
-        self.root.geometry(f"512x640+{x}+{y}")
+        y = (screen_height - 720) // 2
+        self.root.geometry(f"512x720+{x}+{y}")
 
         self.all_ips = get_all_ips()
         self.ip_var = tk.StringVar(value=self.all_ips[0])
@@ -1537,6 +1722,12 @@ class ServerApp:
         saved_ip = self.config.get('ip', '')
         saved_cf_url = self.config.get('cf_url', '')
         saved_cf_key = self.config.get('cf_key', '')
+        
+        # 加载并应用粘贴和剪贴板配置到全局变量
+        global use_ctrl_v, preserve_clipboard, auto_minimize
+        use_ctrl_v = self.config.get('use_ctrl_v', False)
+        preserve_clipboard = self.config.get('preserve_clipboard', False)
+        auto_minimize = self.config.get('auto_minimize', False)
 
         # 在 IP 列表末尾添加 CF 模式选项
         self.all_ips.append('Cloudflare Chat Workers')
@@ -1583,6 +1774,34 @@ class ServerApp:
         elif saved_ip and saved_ip in self.all_ips:
             self.ip_var.set(saved_ip)
 
+        # --- 配置选项框 ---
+        config_frame = tk.LabelFrame(main_frame, text="配置选项", font=("Arial", 10, "bold"), padx=10, pady=10)
+        config_frame.pack(fill='x', pady=(0, 10))
+
+        # 粘贴模式选择
+        self.use_ctrl_v_var = tk.BooleanVar(value=self.config.get('use_ctrl_v', False))
+        cb_paste_mode = tk.Checkbutton(config_frame, text="使用 Ctrl+V 粘贴（关闭则用 Shift+Insert）",
+                                       variable=self.use_ctrl_v_var,
+                                       command=self.on_paste_mode_changed,
+                                       font=("Arial", 9))
+        cb_paste_mode.pack(anchor='w', pady=2)
+
+        # 剪贴板保护
+        self.preserve_clipboard_var = tk.BooleanVar(value=self.config.get('preserve_clipboard', False))
+        cb_preserve = tk.Checkbutton(config_frame, text="保护剪贴板（输入时不覆盖剪贴板内容）",
+                                     variable=self.preserve_clipboard_var,
+                                     command=self.on_preserve_clipboard_changed,
+                                     font=("Arial", 9))
+        cb_preserve.pack(anchor='w', pady=2)
+
+        # 自动最小化
+        self.auto_minimize_var = tk.BooleanVar(value=self.config.get('auto_minimize', False))
+        cb_auto_min = tk.Checkbutton(config_frame, text="启动后自动最小化窗口",
+                                     variable=self.auto_minimize_var,
+                                     command=self.on_auto_minimize_changed,
+                                     font=("Arial", 9))
+        cb_auto_min.pack(anchor='w', pady=2)
+
         # 按钮组
         self.button_frame = tk.Frame(main_frame)
         self.button_frame.pack(fill='x', pady=(0, 20))
@@ -1618,6 +1837,9 @@ class ServerApp:
 
         # 自动启动服务（延迟执行，确保GUI完全加载）
         self.root.after(100, self.auto_start_service)
+        
+        # 检查是否需要自动最小化（延迟更长时间确保服务已启动）
+        self.root.after(500, self.check_auto_minimize)
 
     def show_all_ips_display(self, port, started=False):
         """显示所有可用 IP 地址列表"""
@@ -1662,6 +1884,40 @@ class ServerApp:
         # 转换为 Tkinter 可用的格式
         img_tk = ImageTk.PhotoImage(img)
         return img_tk
+
+    def on_paste_mode_changed(self):
+        """粘贴模式改变时的回调"""
+        global use_ctrl_v
+        use_ctrl_v = self.use_ctrl_v_var.get()
+        self.config['use_ctrl_v'] = use_ctrl_v
+        save_config(self.config)
+        mode = "Ctrl+V" if use_ctrl_v else "Shift+Insert"
+        print(f"Paste mode: {mode}")
+
+    def on_preserve_clipboard_changed(self):
+        """剪贴板保护改变时的回调"""
+        global preserve_clipboard
+        preserve_clipboard = self.preserve_clipboard_var.get()
+        self.config['preserve_clipboard'] = preserve_clipboard
+        save_config(self.config)
+        status = "enabled" if preserve_clipboard else "disabled"
+        print(f"Clipboard preservation: {status}")
+
+    def on_auto_minimize_changed(self):
+        """自动最小化改变时的回调"""
+        global auto_minimize
+        auto_minimize = self.auto_minimize_var.get()
+        self.config['auto_minimize'] = auto_minimize
+        save_config(self.config)
+        status = "enabled" if auto_minimize else "disabled"
+        print(f"Auto minimize: {status}")
+
+    def check_auto_minimize(self):
+        """检查是否需要自动最小化窗口（调用 hide_window 方法隐藏到系统托盘）"""
+        global auto_minimize
+        if auto_minimize and self.is_running:
+            self.hide_window()  # 调用现有的最小化按钮功能
+            print("Window auto-minimized to system tray")
 
     def auto_start_service(self):
         """程序启动时自动启动服务"""
