@@ -96,6 +96,23 @@ HTML_TEMPLATE = """
             color: #333;
         }
         h2 { margin-bottom: 20px; font-weight: 600; }
+        .last-sent-label {
+            width: 100%; 
+            padding: 12px 15px; 
+            margin-bottom: 10px;
+            font-size: 14px; 
+            border-radius: 8px;
+            border: 1px solid #e5e5ea; 
+            box-sizing: border-box;
+            background: #f8f8f8; 
+            color: #666;
+            min-height: 44px;
+            word-wrap: break-word;
+            white-space: pre-wrap;
+            text-align: left;
+            display: flex;
+            align-items: center;
+        }
         .input-group { margin-bottom: 15px; }
         input[type="text"] {
             width: 100%; padding: 15px; font-size: 16px; border-radius: 12px;
@@ -253,10 +270,15 @@ HTML_TEMPLATE = """
             box-shadow: 0 4px 6px rgba(255,149,0,0.2);
         }
         button#backspaceBtn:active { background-color: #e68900; transform: scale(0.98); }
+        button#undoBtn {
+            background-color: #5856d6;
+            box-shadow: 0 4px 6px rgba(88,86,214,0.2);
+        }
+        button#undoBtn:active { background-color: #4846b6; transform: scale(0.98); }
     </style>
 </head>
 <body>
-    <h2>电脑远程输入板</h2>
+    <div class="last-sent-label" id="lastSentLabel" style="display: none;"></div>
     <div class="input-group">
         <input type="text" id="textInput" placeholder="输入文字..." autofocus autocomplete="off">
     </div>
@@ -316,6 +338,20 @@ HTML_TEMPLATE = """
             </label>
         </div>
         <div class="config-item">
+            <span class="config-label">提供 Undo 按钮发送撤销信号 (Ctrl+Z)</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configUndoButton">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="config-item">
+            <span class="config-label">发送前在末尾追加空格</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configAppendSpace">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="config-item">
             <span class="config-label">实验性: 输入时自动静音系统</span>
             <label class="switch-container">
                 <input type="checkbox" class="switch-input" id="configAutoMute">
@@ -335,6 +371,7 @@ HTML_TEMPLATE = """
         const historyList = document.getElementById('historyList');
         const historyContainer = document.getElementById('historyContainer');
         const buttonGroup = document.getElementById('buttonGroup');
+        const lastSentLabel = document.getElementById('lastSentLabel');
         const MAX_HISTORY = 10;
         let isSending = false;
         let debounceTimer = null;
@@ -349,6 +386,8 @@ HTML_TEMPLATE = """
             largeInput: true,
             enterButton: false,
             backspaceButton: false,
+            undoButton: true,
+            appendSpace: true,
             autoMute: false
         };
 
@@ -376,6 +415,8 @@ HTML_TEMPLATE = """
             document.getElementById('configLargeInput').checked = config.largeInput;
             document.getElementById('configEnterButton').checked = config.enterButton;
             document.getElementById('configBackspaceButton').checked = config.backspaceButton;
+            document.getElementById('configUndoButton').checked = config.undoButton;
+            document.getElementById('configAppendSpace').checked = config.appendSpace;
             document.getElementById('configAutoMute').checked = config.autoMute;
 
             // 应用发送按钮显示/隐藏（自动发送开启时隐藏）
@@ -488,6 +529,44 @@ HTML_TEMPLATE = """
                 }
             }
 
+            // 应用Undo按钮
+            const existingUndoBtn = document.getElementById('undoBtn');
+            if (config.undoButton) {
+                if (!existingUndoBtn) {
+                    const undoBtn = document.createElement('button');
+                    undoBtn.id = 'undoBtn';
+                    undoBtn.textContent = 'Undo';
+                    // 在按钮按下时处理点击并保持焦点，防止输入法闪烁
+                    undoBtn.onmousedown = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendUndo(e);
+                    };
+                    undoBtn.ontouchstart = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendUndo(e);
+                    };
+                    buttonGroup.appendChild(undoBtn);
+                } else {
+                    // 如果按钮已存在，确保事件处理器正确设置
+                    existingUndoBtn.onmousedown = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendUndo(e);
+                    };
+                    existingUndoBtn.ontouchstart = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendUndo(e);
+                    };
+                }
+            } else {
+                if (existingUndoBtn) {
+                    existingUndoBtn.remove();
+                }
+            }
+
             if (config.showHistory) {
                 renderHistory();
             }
@@ -551,6 +630,17 @@ HTML_TEMPLATE = """
             config.backspaceButton = this.checked;
             saveConfig();
             applyConfig();
+        });
+
+        document.getElementById('configUndoButton').addEventListener('change', function() {
+            config.undoButton = this.checked;
+            saveConfig();
+            applyConfig();
+        });
+
+        document.getElementById('configAppendSpace').addEventListener('change', function() {
+            config.appendSpace = this.checked;
+            saveConfig();
         });
 
         document.getElementById('configAutoMute').addEventListener('change', function() {
@@ -690,6 +780,38 @@ HTML_TEMPLATE = """
             });
         }
 
+        // 发送Undo键 (Ctrl+Z)
+        function handleSendUndo(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            if (isSending) return;
+            isSending = true;
+            status.innerText = "发送中...";
+            status.style.color = "#888";
+            fetch('/type', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: '', undo: true })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    status.innerText = "✓ 已发送 Undo";
+                    status.style.color = "#34c759";
+                    setTimeout(() => status.innerText = "", 1500);
+                } else { throw new Error("Server error"); }
+            })
+            .catch(err => {
+                status.innerText = "✕ 发送失败";
+                status.style.color = "#ff3b30";
+            })
+            .finally(() => {
+                isSending = false;
+            });
+        }
+
         window.onload = function() { 
             loadConfig();
             setupInputEvents();
@@ -715,8 +837,14 @@ HTML_TEMPLATE = """
             }
         });
         function handleSend() {
-            const text = config.trim ? inputElement.value.trim() : inputElement.value;
+            let text = config.trim ? inputElement.value.trim() : inputElement.value;
             if (text.length === 0 || isSending) return;
+            
+            // 如果启用了追加空格，在末尾添加空格
+            if (config.appendSpace) {
+                text = text + ' ';
+            }
+            
             saveToHistory(text);
             sendRequest(text);
         }
@@ -739,6 +867,13 @@ HTML_TEMPLATE = """
                 if (data.success) {
                     status.innerText = "✓ 已发送";
                     status.style.color = "#34c759";
+                    
+                    // 更新最后发送的文本标签
+                    if (lastSentLabel) {
+                        lastSentLabel.textContent = text;
+                        lastSentLabel.style.display = 'flex';
+                    }
+                    
                     inputElement.value = '';
                     inputElement.focus();
                     
@@ -1119,6 +1254,38 @@ def type_text():
         data = request.get_json()
         enter = data.get('enter', False)
         backspace = data.get('backspace', False)
+        undo = data.get('undo', False)
+        
+        # 如果只是发送Undo键 (Ctrl+Z)
+        if undo:
+            if IS_WINDOWS:
+                # Windows: 使用 Windows API 发送 Ctrl+Z
+                try:
+                    user32 = ctypes.windll.user32
+                    VK_CONTROL = 0x11
+                    VK_Z = 0x5A
+                    ctrl_scan = user32.MapVirtualKeyW(VK_CONTROL, MAPVK_VK_TO_VSC)
+                    z_scan = user32.MapVirtualKeyW(VK_Z, MAPVK_VK_TO_VSC)
+                    
+                    # 按下 Ctrl
+                    user32.keybd_event(VK_CONTROL, ctrl_scan, KEYEVENTF_SCANCODE, 0)
+                    time.sleep(0.02)
+                    # 按下 Z
+                    user32.keybd_event(VK_Z, z_scan, KEYEVENTF_SCANCODE, 0)
+                    time.sleep(0.02)
+                    # 释放 Z
+                    user32.keybd_event(VK_Z, z_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.02)
+                    # 释放 Ctrl
+                    user32.keybd_event(VK_CONTROL, ctrl_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                except Exception as e:
+                    print(f"Windows API error for Ctrl+Z: {e}")
+                    pyautogui.hotkey('ctrl', 'z')
+            else:
+                # Mac/Linux: 使用 pyautogui
+                pyautogui.hotkey('ctrl', 'z')
+            
+            return {'success': True}
         
         # 如果只是发送Enter键
         if enter:
