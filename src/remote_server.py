@@ -121,6 +121,17 @@ HTML_TEMPLATE = """
             transition: border-color 0.2s;
         }
         input[type="text"]:focus { border-color: #007AFF; }
+        textarea {
+            width: 100%; padding: 15px; font-size: 16px; border-radius: 12px;
+            border: 1px solid #d1d1d6; box-sizing: border-box; outline: none;
+            background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            transition: border-color 0.2s;
+            resize: vertical;
+            min-height: 120px;
+            font-family: inherit;
+            line-height: 1.5;
+        }
+        textarea:focus { border-color: #007AFF; }
         .button-group { display: flex; gap: 10px; margin-bottom: 15px; }
         button {
             flex: 1; padding: 15px; font-size: 18px; color: white;
@@ -281,10 +292,10 @@ HTML_TEMPLATE = """
     <h2 id="titleHeader">电脑远程输入板</h2>
     <div class="last-sent-label" id="lastSentLabel" style="display: none;"></div>
     <div class="input-group">
-        <input type="text" id="textInput" placeholder="输入文字..." autofocus autocomplete="off">
+        <textarea id="textInput" placeholder="输入文字..." autofocus></textarea>
     </div>
     <div class="button-group" id="buttonGroup">
-        <button id="sendBtn" onclick="handleSend()">发送 (Ent)</button>
+        <button id="sendBtn" onclick="handleSend()">Send</button>
     </div>
     <div id="status"></div>
     <div class="advanced-toggle" onclick="toggleAdvanced()">⚙️ 高级选项</div>
@@ -595,11 +606,11 @@ HTML_TEMPLATE = """
         function setupInputEvents() {
             // 移除旧的事件监听器（通过重新绑定）
             inputElement.removeEventListener('input', handleInput);
-            inputElement.removeEventListener('keypress', handleKeypress);
+            inputElement.removeEventListener('keydown', handleKeydown);
             
             // 添加新的事件监听器
             inputElement.addEventListener('input', handleInput);
-            inputElement.addEventListener('keypress', handleKeypress);
+            inputElement.addEventListener('keydown', handleKeydown);
         }
 
         // 切换高级选项面板
@@ -715,29 +726,25 @@ HTML_TEMPLATE = """
         }
 
         // 按键事件处理
-        function handleKeypress(event) {
+        function handleKeydown(event) {
             if (event.key === "Enter") {
-                // 如果是textarea，Shift+Enter换行，Enter发送
-                // 如果是input，Enter发送
-                if (inputElement.tagName === 'TEXTAREA') {
-                    if (!event.shiftKey) {
-                        event.preventDefault();
-                        if (debounceTimer) {
-                            clearTimeout(debounceTimer);
-                            debounceTimer = null;
-                        }
-                        handleSend();
-                    }
-                    // Shift+Enter 允许默认行为（换行）
-                } else {
-                    // input 模式下，Enter总是发送
+                // Shift+Enter 始终允许换行
+                if (event.shiftKey) {
+                    return; // 允许默认行为（换行）
+                }
+                
+                // 检查文本框内容是否为空
+                const text = inputElement.value.trim();
+                if (text.length === 0) {
+                    // 文本框为空时，发送 Enter 事件
                     event.preventDefault();
                     if (debounceTimer) {
                         clearTimeout(debounceTimer);
                         debounceTimer = null;
                     }
-                    handleSend();
+                    handleSendEnter();
                 }
+                // 文本框不为空时，允许默认行为（换行），不阻止事件
             }
         }
 
@@ -882,6 +889,7 @@ HTML_TEMPLATE = """
             isSending = true;
             status.innerText = "发送中...";
             status.style.color = "#888";
+            
             fetch('/type', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
