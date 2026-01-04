@@ -278,6 +278,7 @@ HTML_TEMPLATE = """
     </style>
 </head>
 <body>
+    <h2 id="titleHeader">电脑远程输入板</h2>
     <div class="last-sent-label" id="lastSentLabel" style="display: none;"></div>
     <div class="input-group">
         <input type="text" id="textInput" placeholder="输入文字..." autofocus autocomplete="off">
@@ -358,6 +359,13 @@ HTML_TEMPLATE = """
                 <span class="switch-slider"></span>
             </label>
         </div>
+        <div class="config-item">
+            <span class="config-label">显示上次发送的文本</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configShowLastSent">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
     </div>
     <div class="history-container" id="historyContainer">
         <div class="history-header">
@@ -372,6 +380,7 @@ HTML_TEMPLATE = """
         const historyContainer = document.getElementById('historyContainer');
         const buttonGroup = document.getElementById('buttonGroup');
         const lastSentLabel = document.getElementById('lastSentLabel');
+        const titleHeader = document.getElementById('titleHeader');
         const MAX_HISTORY = 10;
         let isSending = false;
         let debounceTimer = null;
@@ -388,7 +397,8 @@ HTML_TEMPLATE = """
             backspaceButton: false,
             undoButton: true,
             appendSpace: true,
-            autoMute: false
+            autoMute: false,
+            showLastSent: false
         };
 
         // 从localStorage加载配置
@@ -418,6 +428,7 @@ HTML_TEMPLATE = """
             document.getElementById('configUndoButton').checked = config.undoButton;
             document.getElementById('configAppendSpace').checked = config.appendSpace;
             document.getElementById('configAutoMute').checked = config.autoMute;
+            document.getElementById('configShowLastSent').checked = config.showLastSent;
 
             // 应用发送按钮显示/隐藏（自动发送开启时隐藏）
             const sendBtn = document.getElementById('sendBtn');
@@ -425,6 +436,14 @@ HTML_TEMPLATE = """
 
             // 应用历史记录显示/隐藏
             historyContainer.style.display = config.showHistory ? 'block' : 'none';
+
+            // 应用显示上次发送文本的配置
+            if (titleHeader) {
+                titleHeader.style.display = config.showLastSent ? 'none' : 'block';
+            }
+            if (lastSentLabel && !config.showLastSent) {
+                lastSentLabel.style.display = 'none';
+            }
 
             // 应用大输入框
             if (config.largeInput) {
@@ -654,6 +673,12 @@ HTML_TEMPLATE = """
             });
         });
 
+        document.getElementById('configShowLastSent').addEventListener('change', function() {
+            config.showLastSent = this.checked;
+            saveConfig();
+            applyConfig();
+        });
+
         // 输入事件处理
         let isFirstInput = true;  // 标记是否是首次输入
         let muteRequested = false; // 标记是否已请求静音
@@ -868,8 +893,8 @@ HTML_TEMPLATE = """
                     status.innerText = "✓ 已发送";
                     status.style.color = "#34c759";
                     
-                    // 更新最后发送的文本标签
-                    if (lastSentLabel) {
+                    // 更新最后发送的文本标签（仅在配置开启时显示）
+                    if (lastSentLabel && config.showLastSent) {
                         lastSentLabel.textContent = text;
                         lastSentLabel.style.display = 'flex';
                     }
