@@ -121,6 +121,54 @@ HTML_TEMPLATE = """
         }
         button#clearBtn:active { background-color: #636366; transform: scale(0.98); }
         #status { margin-top: 10px; height: 20px; font-size: 14px; color: #34c759; font-weight: 500;}
+        .auto-send-switch { 
+            margin-top: 10px; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            gap: 8px;
+            font-size: 14px;
+            color: #666;
+        }
+        .switch-container {
+            position: relative;
+            display: inline-block;
+            width: 44px;
+            height: 24px;
+        }
+        .switch-input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+        .switch-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: #ccc;
+            transition: 0.3s;
+            border-radius: 24px;
+        }
+        .switch-slider:before {
+            position: absolute;
+            content: "";
+            height: 18px;
+            width: 18px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: 0.3s;
+            border-radius: 50%;
+        }
+        .switch-input:checked + .switch-slider {
+            background-color: #007AFF;
+        }
+        .switch-input:checked + .switch-slider:before {
+            transform: translateX(20px);
+        }
         .history-container { margin-top: 30px; text-align: left; }
         .history-header { 
             font-size: 14px; color: #888; margin-bottom: 10px; 
@@ -140,6 +188,71 @@ HTML_TEMPLATE = """
             max-width: 85%; font-size: 14px;
         }
         .history-arrow { color: #c7c7cc; font-size: 18px; }
+        .advanced-toggle {
+            margin-top: 15px;
+            font-size: 14px;
+            color: #007AFF;
+            cursor: pointer;
+            text-decoration: underline;
+        }
+        .advanced-panel {
+            margin-top: 15px;
+            padding: 15px;
+            background: #fff;
+            border-radius: 12px;
+            border: 1px solid #e5e5ea;
+            display: none;
+            text-align: left;
+        }
+        .advanced-panel.show {
+            display: block;
+        }
+        .config-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 0;
+            border-bottom: 1px solid #f0f0f0;
+        }
+        .config-item:last-child {
+            border-bottom: none;
+        }
+        .config-label {
+            font-size: 14px;
+            color: #333;
+            flex: 1;
+        }
+        input[type="text"].large-input {
+            padding: 20px;
+            font-size: 18px;
+            min-height: 60px;
+        }
+        textarea.large-input {
+            width: 100%;
+            padding: 20px;
+            font-size: 18px;
+            border-radius: 12px;
+            border: 1px solid #d1d1d6;
+            box-sizing: border-box;
+            outline: none;
+            background: #fff;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+            transition: border-color 0.2s;
+            resize: vertical;
+            min-height: 100px;
+            font-family: inherit;
+        }
+        textarea.large-input:focus { border-color: #007AFF; }
+        button#enterBtn {
+            background-color: #34c759;
+            box-shadow: 0 4px 6px rgba(52,199,89,0.2);
+        }
+        button#enterBtn:active { background-color: #28a745; transform: scale(0.98); }
+        button#backspaceBtn {
+            background-color: #ff9500;
+            box-shadow: 0 4px 6px rgba(255,149,0,0.2);
+        }
+        button#backspaceBtn:active { background-color: #e68900; transform: scale(0.98); }
     </style>
 </head>
 <body>
@@ -147,12 +260,63 @@ HTML_TEMPLATE = """
     <div class="input-group">
         <input type="text" id="textInput" placeholder="输入文字..." autofocus autocomplete="off">
     </div>
-    <div class="button-group">
-        <button id="clearBtn" onclick="handleClear()">清空</button>
+    <div class="button-group" id="buttonGroup">
         <button id="sendBtn" onclick="handleSend()">发送 (Ent)</button>
     </div>
     <div id="status"></div>
-    <div class="history-container">
+    <div class="advanced-toggle" onclick="toggleAdvanced()">⚙️ 高级选项</div>
+    <div class="advanced-panel" id="advancedPanel">
+        <div class="config-item">
+            <span class="config-label">自动发送</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configAutoSend">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="config-item">
+            <span class="config-label">防抖延迟</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configDebounce">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="config-item">
+            <span class="config-label">清空两端空白</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configTrim">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="config-item">
+            <span class="config-label">展示历史记录</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configShowHistory">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="config-item">
+            <span class="config-label">使用较大的文本输入框</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configLargeInput">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="config-item">
+            <span class="config-label">提供 Enter 按钮发送 Enter 信号</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configEnterButton">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+        <div class="config-item">
+            <span class="config-label">提供 Backspace 按钮发送删除信号</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configBackspaceButton">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
+    </div>
+    <div class="history-container" id="historyContainer">
         <div class="history-header">
             <span>最近记录 (点击重发)</span>
             <span class="clear-btn" onclick="clearHistory()">清空</span>
@@ -160,40 +324,369 @@ HTML_TEMPLATE = """
         <ul id="historyList" class="history-list"></ul>
     </div>
     <script>
-        const input = document.getElementById('textInput');
         const status = document.getElementById('status');
         const historyList = document.getElementById('historyList');
+        const historyContainer = document.getElementById('historyContainer');
+        const buttonGroup = document.getElementById('buttonGroup');
         const MAX_HISTORY = 10;
+        let isSending = false;
+        let debounceTimer = null;
+        let inputElement = document.getElementById('textInput');
 
-        window.onload = function() { renderHistory(); }
+        // 配置项
+        const config = {
+            autoSend: true,
+            debounce: true,
+            trim: true,
+            showHistory: false,
+            largeInput: true,
+            enterButton: false,
+            backspaceButton: false
+        };
 
-        // 回车发送
-        input.addEventListener("keypress", function(event) {
-            if (event.key === "Enter") { event.preventDefault(); handleSend(); }
+        // 从localStorage加载配置
+        function loadConfig() {
+            const saved = localStorage.getItem('airtypeConfig');
+            if (saved) {
+                Object.assign(config, JSON.parse(saved));
+            }
+            applyConfig();
+        }
+
+        // 保存配置到localStorage
+        function saveConfig() {
+            localStorage.setItem('airtypeConfig', JSON.stringify(config));
+        }
+
+        // 应用配置
+        function applyConfig() {
+            // 更新开关状态
+            document.getElementById('configAutoSend').checked = config.autoSend;
+            document.getElementById('configDebounce').checked = config.debounce;
+            document.getElementById('configTrim').checked = config.trim;
+            document.getElementById('configShowHistory').checked = config.showHistory;
+            document.getElementById('configLargeInput').checked = config.largeInput;
+            document.getElementById('configEnterButton').checked = config.enterButton;
+            document.getElementById('configBackspaceButton').checked = config.backspaceButton;
+
+            // 应用发送按钮显示/隐藏（自动发送开启时隐藏）
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.style.display = config.autoSend ? 'none' : 'flex';
+
+            // 应用历史记录显示/隐藏
+            historyContainer.style.display = config.showHistory ? 'block' : 'none';
+
+            // 应用大输入框
+            if (config.largeInput) {
+                if (inputElement.tagName === 'INPUT') {
+                    const textarea = document.createElement('textarea');
+                    textarea.id = 'textInput';
+                    textarea.className = 'large-input';
+                    textarea.placeholder = '输入文字...';
+                    textarea.autofocus = true;
+                    textarea.value = inputElement.value;
+                    inputElement.parentNode.replaceChild(textarea, inputElement);
+                    inputElement = textarea;
+                    setupInputEvents();
+                }
+            } else {
+                if (inputElement.tagName === 'TEXTAREA') {
+                    const input = document.createElement('input');
+                    input.type = 'text';
+                    input.id = 'textInput';
+                    input.placeholder = '输入文字...';
+                    input.autofocus = true;
+                    input.value = inputElement.value;
+                    inputElement.parentNode.replaceChild(input, inputElement);
+                    inputElement = input;
+                    setupInputEvents();
+                }
+            }
+
+            // 应用Enter按钮
+            const existingEnterBtn = document.getElementById('enterBtn');
+            if (config.enterButton) {
+                if (!existingEnterBtn) {
+                    const enterBtn = document.createElement('button');
+                    enterBtn.id = 'enterBtn';
+                    enterBtn.textContent = 'Enter';
+                    // 在按钮按下时处理点击并保持焦点，防止输入法闪烁
+                    enterBtn.onmousedown = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendEnter(e);
+                    };
+                    enterBtn.ontouchstart = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendEnter(e);
+                    };
+                    buttonGroup.appendChild(enterBtn);
+                } else {
+                    // 如果按钮已存在，确保事件处理器正确设置
+                    existingEnterBtn.onmousedown = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendEnter(e);
+                    };
+                    existingEnterBtn.ontouchstart = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendEnter(e);
+                    };
+                }
+            } else {
+                if (existingEnterBtn) {
+                    existingEnterBtn.remove();
+                }
+            }
+
+            // 应用Backspace按钮
+            const existingBackspaceBtn = document.getElementById('backspaceBtn');
+            if (config.backspaceButton) {
+                if (!existingBackspaceBtn) {
+                    const backspaceBtn = document.createElement('button');
+                    backspaceBtn.id = 'backspaceBtn';
+                    backspaceBtn.textContent = 'Backspace';
+                    // 在按钮按下时处理点击并保持焦点，防止输入法闪烁
+                    backspaceBtn.onmousedown = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendBackspace(e);
+                    };
+                    backspaceBtn.ontouchstart = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendBackspace(e);
+                    };
+                    buttonGroup.appendChild(backspaceBtn);
+                } else {
+                    // 如果按钮已存在，确保事件处理器正确设置
+                    existingBackspaceBtn.onmousedown = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendBackspace(e);
+                    };
+                    existingBackspaceBtn.ontouchstart = function(e) {
+                        e.preventDefault();
+                        inputElement.focus();
+                        handleSendBackspace(e);
+                    };
+                }
+            } else {
+                if (existingBackspaceBtn) {
+                    existingBackspaceBtn.remove();
+                }
+            }
+
+            if (config.showHistory) {
+                renderHistory();
+            }
+        }
+
+        // 设置输入框事件
+        function setupInputEvents() {
+            // 移除旧的事件监听器（通过重新绑定）
+            inputElement.removeEventListener('input', handleInput);
+            inputElement.removeEventListener('keypress', handleKeypress);
+            
+            // 添加新的事件监听器
+            inputElement.addEventListener('input', handleInput);
+            inputElement.addEventListener('keypress', handleKeypress);
+        }
+
+        // 切换高级选项面板
+        function toggleAdvanced() {
+            const panel = document.getElementById('advancedPanel');
+            panel.classList.toggle('show');
+        }
+
+        // 配置项变更处理
+        document.getElementById('configAutoSend').addEventListener('change', function() {
+            config.autoSend = this.checked;
+            saveConfig();
+            // 自动发送状态改变时，更新发送按钮显示
+            const sendBtn = document.getElementById('sendBtn');
+            sendBtn.style.display = config.autoSend ? 'none' : 'flex';
         });
+
+        document.getElementById('configDebounce').addEventListener('change', function() {
+            config.debounce = this.checked;
+            saveConfig();
+        });
+
+        document.getElementById('configTrim').addEventListener('change', function() {
+            config.trim = this.checked;
+            saveConfig();
+        });
+
+        document.getElementById('configShowHistory').addEventListener('change', function() {
+            config.showHistory = this.checked;
+            saveConfig();
+            applyConfig();
+        });
+
+        document.getElementById('configLargeInput').addEventListener('change', function() {
+            config.largeInput = this.checked;
+            saveConfig();
+            applyConfig();
+        });
+
+        document.getElementById('configEnterButton').addEventListener('change', function() {
+            config.enterButton = this.checked;
+            saveConfig();
+            applyConfig();
+        });
+
+        document.getElementById('configBackspaceButton').addEventListener('change', function() {
+            config.backspaceButton = this.checked;
+            saveConfig();
+            applyConfig();
+        });
+
+        // 输入事件处理
+        function handleInput(event) {
+            if (!config.autoSend || isSending) return;
+            const text = config.trim ? inputElement.value.trim() : inputElement.value;
+            if (text.length === 0) return;
+
+            if (config.debounce) {
+                if (debounceTimer) {
+                    clearTimeout(debounceTimer);
+                }
+                debounceTimer = setTimeout(function() {
+                    const currentText = config.trim ? inputElement.value.trim() : inputElement.value;
+                    if (currentText.length > 0 && !isSending) {
+                        handleSend();
+                    }
+                }, 500);
+            } else {
+                handleSend();
+            }
+        }
+
+        // 按键事件处理
+        function handleKeypress(event) {
+            if (event.key === "Enter") {
+                // 如果是textarea，Shift+Enter换行，Enter发送
+                // 如果是input，Enter发送
+                if (inputElement.tagName === 'TEXTAREA') {
+                    if (!event.shiftKey) {
+                        event.preventDefault();
+                        if (debounceTimer) {
+                            clearTimeout(debounceTimer);
+                            debounceTimer = null;
+                        }
+                        handleSend();
+                    }
+                    // Shift+Enter 允许默认行为（换行）
+                } else {
+                    // input 模式下，Enter总是发送
+                    event.preventDefault();
+                    if (debounceTimer) {
+                        clearTimeout(debounceTimer);
+                        debounceTimer = null;
+                    }
+                    handleSend();
+                }
+            }
+        }
+
+        // 发送Enter键
+        function handleSendEnter(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            if (isSending) return;
+            isSending = true;
+            status.innerText = "发送中...";
+            status.style.color = "#888";
+            fetch('/type', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: '', enter: true })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    status.innerText = "✓ 已发送 Enter";
+                    status.style.color = "#34c759";
+                    setTimeout(() => status.innerText = "", 1500);
+                } else { throw new Error("Server error"); }
+            })
+            .catch(err => {
+                status.innerText = "✕ 发送失败";
+                status.style.color = "#ff3b30";
+            })
+            .finally(() => {
+                isSending = false;
+            });
+        }
+
+        // 发送Backspace键
+        function handleSendBackspace(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            if (isSending) return;
+            isSending = true;
+            status.innerText = "发送中...";
+            status.style.color = "#888";
+            fetch('/type', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: '', backspace: true })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    status.innerText = "✓ 已发送 Backspace";
+                    status.style.color = "#34c759";
+                    setTimeout(() => status.innerText = "", 1500);
+                } else { throw new Error("Server error"); }
+            })
+            .catch(err => {
+                status.innerText = "✕ 发送失败";
+                status.style.color = "#ff3b30";
+            })
+            .finally(() => {
+                isSending = false;
+            });
+        }
+
+        window.onload = function() { 
+            loadConfig();
+            setupInputEvents();
+        }
 
         // 点击页面任意位置聚焦输入框（除了按钮和历史记录）
         document.body.addEventListener('click', function(event) {
             const target = event.target;
-            // 如果点击的不是按钮、历史记录项、清空按钮，则聚焦输入框
+            // 如果点击的不是按钮、历史记录项、清空按钮、高级选项面板，则聚焦输入框
             if (!target.closest('button') &&
                 !target.closest('.history-item') &&
                 !target.closest('.clear-btn') &&
-                target !== input) {
-                input.focus();
+                !target.closest('.advanced-panel') &&
+                !target.closest('.advanced-toggle') &&
+                target !== inputElement) {
+                inputElement.focus();
             }
         });
         function handleSend() {
-            const text = input.value.trim();
-            if (!text) return;
+            const text = config.trim ? inputElement.value.trim() : inputElement.value;
+            if (text.length === 0 || isSending) return;
             saveToHistory(text);
             sendRequest(text);
         }
         function handleClear() {
-            input.value = '';
-            input.focus();
+            inputElement.value = '';
+            inputElement.focus();
         }
         function sendRequest(text) {
+            if (isSending) return;
+            isSending = true;
             status.innerText = "发送中...";
             status.style.color = "#888";
             fetch('/type', {
@@ -206,13 +699,17 @@ HTML_TEMPLATE = """
                 if (data.success) {
                     status.innerText = "✓ 已发送";
                     status.style.color = "#34c759";
-                    input.value = ''; 
+                    inputElement.value = '';
+                    inputElement.focus();
                     setTimeout(() => status.innerText = "", 1500);
                 } else { throw new Error("Server error"); }
             })
             .catch(err => {
                 status.innerText = "✕ 发送失败";
                 status.style.color = "#ff3b30";
+            })
+            .finally(() => {
+                isSending = false;
             });
         }
         function getHistory() {
@@ -228,12 +725,16 @@ HTML_TEMPLATE = """
             renderHistory();
         }
         function renderHistory() {
+            if (!config.showHistory) return;
             const history = getHistory();
             historyList.innerHTML = '';
             history.forEach(text => {
                 const li = document.createElement('li');
                 li.className = 'history-item';
-                li.onclick = () => { input.value = text; handleSend(); };
+                li.onclick = () => { 
+                    inputElement.value = text; 
+                    handleSend(); 
+                };
                 li.innerHTML = `<span class="history-text">${escapeHtml(text)}</span><span class="history-arrow">⤶</span>`;
                 historyList.appendChild(li);
             });
@@ -442,6 +943,52 @@ def index():
 def type_text():
     try:
         data = request.get_json()
+        enter = data.get('enter', False)
+        backspace = data.get('backspace', False)
+        
+        # 如果只是发送Enter键
+        if enter:
+            if IS_WINDOWS:
+                # Windows: 使用 Windows API 发送 Enter 键
+                try:
+                    user32 = ctypes.windll.user32
+                    VK_RETURN = 0x0D
+                    return_scan = user32.MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC)
+                    # 按下 Enter
+                    user32.keybd_event(VK_RETURN, return_scan, KEYEVENTF_SCANCODE, 0)
+                    time.sleep(0.02)
+                    # 释放 Enter
+                    user32.keybd_event(VK_RETURN, return_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                except Exception as e:
+                    print(f"Windows API error for Enter: {e}")
+                    pyautogui.press('enter')
+            else:
+                # Mac/Linux: 使用 pyautogui
+                pyautogui.press('enter')
+            return {'success': True}
+        
+        # 如果只是发送Backspace键
+        if backspace:
+            if IS_WINDOWS:
+                # Windows: 使用 Windows API 发送 Backspace 键
+                try:
+                    user32 = ctypes.windll.user32
+                    VK_BACK = 0x08
+                    backspace_scan = user32.MapVirtualKeyW(VK_BACK, MAPVK_VK_TO_VSC)
+                    # 按下 Backspace
+                    user32.keybd_event(VK_BACK, backspace_scan, KEYEVENTF_SCANCODE, 0)
+                    time.sleep(0.02)
+                    # 释放 Backspace
+                    user32.keybd_event(VK_BACK, backspace_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                except Exception as e:
+                    print(f"Windows API error for Backspace: {e}")
+                    pyautogui.press('backspace')
+            else:
+                # Mac/Linux: 使用 pyautogui
+                pyautogui.press('backspace')
+            return {'success': True}
+        
+        # 发送文本
         text = data.get('text', '')
         if text:
             pyperclip.copy(text)
@@ -672,6 +1219,9 @@ class ServerApp:
         self.tip_label = tk.Label(main_frame, text="", fg="#888", font=("Arial", 8))
         self.tip_label.pack(pady=(5, 0))
 
+        # 自动启动服务（延迟执行，确保GUI完全加载）
+        self.root.after(100, self.auto_start_service)
+
     def show_all_ips_display(self, port, started=False):
         """显示所有可用 IP 地址列表"""
         # 过滤掉 0.0.0.0 和 Cloudflare 选项
@@ -715,6 +1265,30 @@ class ServerApp:
         # 转换为 Tkinter 可用的格式
         img_tk = ImageTk.PhotoImage(img)
         return img_tk
+
+    def auto_start_service(self):
+        """程序启动时自动启动服务"""
+        if not self.is_running:
+            selected = self.ip_var.get()
+
+            # 判断模式并启动
+            if selected == 'Cloudflare Chat Workers':
+                cf_url = self.cf_url_var.get().strip()
+                cf_key = self.cf_key_var.get()
+                if cf_url and cf_key:
+                    # 保存 CF 配置
+                    self.config['mode'] = 'cf'
+                    self.config['cf_url'] = cf_url
+                    self.config['cf_key'] = cf_key
+                    save_config(self.config)
+                    self.start_cf_mode()
+            else:
+                # 保存局域网配置
+                self.config['mode'] = 'lan'
+                self.config['port'] = self.port_var.get()
+                self.config['ip'] = selected
+                save_config(self.config)
+                self.start_lan_mode()
 
     def toggle_server(self):
         if self.is_running:
