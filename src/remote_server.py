@@ -1056,6 +1056,12 @@ def send_shift_insert_windows():
     if not IS_WINDOWS:
         return False
 
+    user32 = None
+    shift_scan = None
+    insert_scan = None
+    shift_pressed = False
+    insert_pressed = False
+
     try:
         user32 = ctypes.windll.user32
 
@@ -1065,22 +1071,37 @@ def send_shift_insert_windows():
 
         # 按下 Shift（使用扫描码）
         user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE, 0)
+        shift_pressed = True
         time.sleep(0.05)
 
         # 按下 Insert（使用扫描码 + 扩展键标志）
         user32.keybd_event(VK_INSERT, insert_scan, KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY, 0)
+        insert_pressed = True
         time.sleep(0.02)
 
         # 释放 Insert（使用扫描码 + 扩展键标志）
         user32.keybd_event(VK_INSERT, insert_scan, KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+        insert_pressed = False
         time.sleep(0.02)
 
         # 释放 Shift（使用扫描码）
         user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+        shift_pressed = False
 
         return True
     except Exception as e:
         print(f"Windows API error: {e}")
+        # 确保释放所有已按下的键，防止 Insert 键单独触发导致进入插入模式
+        if user32 and shift_scan is not None and insert_scan is not None:
+            try:
+                if insert_pressed:
+                    # 释放 Insert 键（如果已按下）
+                    user32.keybd_event(VK_INSERT, insert_scan, KEYEVENTF_SCANCODE | KEYEVENTF_EXTENDEDKEY | KEYEVENTF_KEYUP, 0)
+                if shift_pressed:
+                    # 释放 Shift 键（如果已按下）
+                    user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+            except Exception as cleanup_error:
+                print(f"Error during key cleanup: {cleanup_error}")
         return False
 
 
