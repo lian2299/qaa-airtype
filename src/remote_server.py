@@ -315,6 +315,13 @@ HTML_TEMPLATE = """
                 <span class="switch-slider"></span>
             </label>
         </div>
+        <div class="config-item">
+            <span class="config-label">实验性: 输入时自动静音系统</span>
+            <label class="switch-container">
+                <input type="checkbox" class="switch-input" id="configAutoMute">
+                <span class="switch-slider"></span>
+            </label>
+        </div>
     </div>
     <div class="history-container" id="historyContainer">
         <div class="history-header">
@@ -341,7 +348,8 @@ HTML_TEMPLATE = """
             showHistory: false,
             largeInput: true,
             enterButton: false,
-            backspaceButton: false
+            backspaceButton: false,
+            autoMute: false
         };
 
         // 从localStorage加载配置
@@ -368,6 +376,7 @@ HTML_TEMPLATE = """
             document.getElementById('configLargeInput').checked = config.largeInput;
             document.getElementById('configEnterButton').checked = config.enterButton;
             document.getElementById('configBackspaceButton').checked = config.backspaceButton;
+            document.getElementById('configAutoMute').checked = config.autoMute;
 
             // 应用发送按钮显示/隐藏（自动发送开启时隐藏）
             const sendBtn = document.getElementById('sendBtn');
@@ -544,8 +553,33 @@ HTML_TEMPLATE = """
             applyConfig();
         });
 
+        document.getElementById('configAutoMute').addEventListener('change', function() {
+            config.autoMute = this.checked;
+            saveConfig();
+            // 通知服务器端更新静音状态
+            fetch('/mute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: this.checked })
+            });
+        });
+
         // 输入事件处理
+        let isFirstInput = true;  // 标记是否是首次输入
+        let muteRequested = false; // 标记是否已请求静音
+        
         function handleInput(event) {
+            // 如果启用了自动静音且是首次输入，立即请求静音
+            if (config.autoMute && isFirstInput && !muteRequested) {
+                isFirstInput = false;
+                muteRequested = true;
+                fetch('/mute_immediate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mute: true })
+                }).catch(err => console.error('Failed to mute:', err));
+            }
+            
             if (!config.autoSend || isSending) return;
             const text = config.trim ? inputElement.value.trim() : inputElement.value;
             if (text.length === 0) return;
@@ -659,6 +693,12 @@ HTML_TEMPLATE = """
         window.onload = function() { 
             loadConfig();
             setupInputEvents();
+            // 同步自动静音状态到服务器
+            fetch('/mute', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enabled: config.autoMute })
+            });
         }
 
         // 点击页面任意位置聚焦输入框（除了按钮和历史记录）
@@ -701,12 +741,34 @@ HTML_TEMPLATE = """
                     status.style.color = "#34c759";
                     inputElement.value = '';
                     inputElement.focus();
+                    
+                    // 发送完成后，如果启用了自动静音，恢复音量
+                    if (config.autoMute && muteRequested) {
+                        muteRequested = false;
+                        isFirstInput = true;
+                        fetch('/mute_immediate', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ mute: false })
+                        }).catch(err => console.error('Failed to unmute:', err));
+                    }
+                    
                     setTimeout(() => status.innerText = "", 1500);
                 } else { throw new Error("Server error"); }
             })
             .catch(err => {
                 status.innerText = "✕ 发送失败";
                 status.style.color = "#ff3b30";
+                // 发送失败也要恢复音量
+                if (config.autoMute && muteRequested) {
+                    muteRequested = false;
+                    isFirstInput = true;
+                    fetch('/mute_immediate', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ mute: false })
+                    }).catch(err => console.error('Failed to unmute:', err));
+                }
             })
             .finally(() => {
                 isSending = false;
@@ -761,6 +823,65 @@ if IS_WINDOWS:
     KEYEVENTF_KEYUP = 0x0002
     KEYEVENTF_SCANCODE = 0x0008
     MAPVK_VK_TO_VSC = 0
+
+# 系统音量控制相关
+auto_mute_enabled = False  # 默认关闭自动静音功能
+original_mute_state = False  # 记录原始静音状态
+current_muted_by_app = False  # 记录当前是否由应用控制静音
+
+def set_system_mute_windows(mute: bool) -> bool:
+    """控制 Windows 系统音量静音状态（不显示音量条）"""
+    if not IS_WINDOWS:
+        return False
+    
+    try:
+        # 使用 pycaw 的正确方式：直接访问 EndpointVolume 属性
+        from pycaw.pycaw import AudioUtilities
+        
+        # 获取音频设备
+        speakers = AudioUtilities.GetSpeakers()
+        
+        # 正确的方式：直接访问 EndpointVolume 属性
+        volume = speakers.EndpointVolume
+        
+        # 设置静音状态（不会显示音量条）
+        volume.SetMute(1 if mute else 0, None)
+        print(f"[pycaw] {'静音' if mute else '取消静音'}成功（无OSD）")
+        
+        return True
+        
+    except ImportError as e:
+        print(f"Warning: pycaw 未安装: {e}")
+        print("请运行: pip install pycaw comtypes")
+        return False
+    
+    except Exception as e:
+        print(f"pycaw 静音失败: {e}")
+        import traceback
+        traceback.print_exc()
+        
+        # 使用备用方案（会显示音量条）
+        print(f"使用备用方案（会显示音量条）...")
+        try:
+            user32 = ctypes.windll.user32
+            VK_VOLUME_MUTE = 0xAD
+            
+            global current_muted_by_app
+            
+            # 只在需要切换时才按键
+            if (mute and not current_muted_by_app) or (not mute and current_muted_by_app):
+                user32.keybd_event(VK_VOLUME_MUTE, 0, 0, 0)
+                time.sleep(0.02)
+                user32.keybd_event(VK_VOLUME_MUTE, 0, 0x0002, 0)
+                print(f"[备用] {'静音' if mute else '取消静音'}（会显示OSD）")
+                return True
+            
+            return True
+                
+        except Exception as e2:
+            print(f"备用方案也失败: {e2}")
+            return False
+
 
 def send_shift_insert_windows():
     """使用 Windows API 发送 Shift+Insert 组合键（使用扫描码，兼容终端）"""
@@ -939,6 +1060,59 @@ class CFChatClient:
 def index():
     return render_template_string(HTML_TEMPLATE)
 
+@app.route('/mute', methods=['POST'])
+def toggle_mute():
+    """切换自动静音功能"""
+    global auto_mute_enabled
+    try:
+        data = request.get_json()
+        enabled = data.get('enabled', False)
+        auto_mute_enabled = enabled
+        return {'success': True, 'enabled': auto_mute_enabled}
+    except Exception as e:
+        print(f"Error in toggle_mute: {e}")
+        return {'success': False}
+
+@app.route('/mute_immediate', methods=['POST'])
+def mute_immediate():
+    """立即静音或取消静音（用于语音输入时）"""
+    global current_muted_by_app
+    
+    try:
+        data = request.get_json()
+        mute = data.get('mute', False)
+        
+        if IS_WINDOWS:
+            if mute:
+                # 如果当前未被应用静音，则切换到静音
+                if not current_muted_by_app:
+                    success = set_system_mute_windows(True)
+                    if success:
+                        current_muted_by_app = True
+                    print(f"🔇 语音输入开始，切换到静音: {success}")
+                else:
+                    success = True
+                    print("已经处于静音状态")
+            else:
+                # 如果当前被应用静音，则切换回来
+                if current_muted_by_app:
+                    success = set_system_mute_windows(False)
+                    if success:
+                        current_muted_by_app = False
+                    print(f"🔊 语音输入结束，切换回音量: {success}")
+                else:
+                    success = True
+                    print("未处于应用静音状态，无需恢复")
+            
+            return {'success': success}
+        else:
+            return {'success': False, 'message': 'Only supported on Windows'}
+    except Exception as e:
+        print(f"Error in mute_immediate: {e}")
+        import traceback
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+
 @app.route('/type', methods=['POST'])
 def type_text():
     try:
@@ -965,6 +1139,7 @@ def type_text():
             else:
                 # Mac/Linux: 使用 pyautogui
                 pyautogui.press('enter')
+            
             return {'success': True}
         
         # 如果只是发送Backspace键
@@ -986,6 +1161,7 @@ def type_text():
             else:
                 # Mac/Linux: 使用 pyautogui
                 pyautogui.press('backspace')
+            
             return {'success': True}
         
         # 发送文本
