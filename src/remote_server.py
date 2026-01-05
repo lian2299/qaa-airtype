@@ -983,6 +983,127 @@ HTML_TEMPLATE = """
             const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
             return text.replace(/[&<>"']/g, function(m) { return map[m]; });
         }
+
+        // Keyboard detection and keep-alive logic
+        (function () {
+            const KeyboardState = {
+                visible: false,
+                height: 0,
+            };
+
+            let baseHeight = null;
+            let isInputFocused = false;
+
+            function getViewportHeight() {
+                return window.visualViewport ? window.visualViewport.height : window.innerHeight;
+            }
+
+            function ensureBaseHeight() {
+                if (baseHeight == null) {
+                    baseHeight = getViewportHeight();
+                }
+            }
+
+            // Listen for input focus state
+            document.addEventListener('focusin', (e) => {
+                if (e.target.matches('input, textarea, [contenteditable="true"]')) {
+                    isInputFocused = true;
+                    ensureBaseHeight();
+                }
+            });
+
+            document.addEventListener('focusout', (e) => {
+                if (e.target.matches('input, textarea, [contenteditable="true"]')) {
+                    isInputFocused = false;
+                }
+            });
+
+            // Listen for viewport height changes to infer keyboard state
+            function updateKeyboardState() {
+                ensureBaseHeight();
+
+                const vh = getViewportHeight();
+                const delta = baseHeight - vh;
+
+                // Consider keyboard visible if delta exceeds threshold (adjust per device)
+                const maybeVisible = delta > 100;
+
+                KeyboardState.visible = isInputFocused && maybeVisible;
+                KeyboardState.height = KeyboardState.visible ? delta : 0;
+            }
+
+            if (window.visualViewport) {
+                window.visualViewport.addEventListener('resize', updateKeyboardState);
+            } else {
+                window.addEventListener('resize', updateKeyboardState);
+            }
+
+            window.addEventListener('load', ensureBaseHeight);
+
+            // Expose API
+            window.Keyboard = {
+                /**
+                 * Check if keyboard is visible
+                 */
+                isVisible() {
+                    return KeyboardState.visible;
+                },
+
+                /**
+                 * Force show keyboard and focus on input element
+                 * @param {HTMLElement} input
+                 */
+                showFor(input) {
+                    if (!input) return;
+
+                    // If already visible, ensure cursor position is correct
+                    if (KeyboardState.visible) {
+                        if (document.activeElement !== input) {
+                            input.focus();
+                        }
+                        try {
+                            if (typeof input.setSelectionRange === 'function') {
+                                const len = input.value.length;
+                                input.setSelectionRange(len, len);
+                            }
+                        } catch (e) {}
+                        return;
+                    }
+
+                    // Not visible yet: blur then focus to force refresh input context
+                    if (document.activeElement === input) {
+                        input.blur();
+                    }
+
+                    setTimeout(() => {
+                        input.focus();
+
+                        try {
+                            if (typeof input.setSelectionRange === 'function') {
+                                const len = input.value.length;
+                                input.setSelectionRange(len, len);
+                            }
+                        } catch (e) {}
+                    }, 10);
+                },
+            };
+
+            console.log('Keyboard API ready:', window.Keyboard);
+
+            // Keep keyboard visible: check every 2 seconds
+            setInterval(function() {
+                // Check if advanced panel is open, if so, skip keyboard check
+                const advancedPanel = document.getElementById('advancedPanel');
+                if (advancedPanel && advancedPanel.classList.contains('show')) {
+                    return; // Panel is open, disable keyboard auto-show
+                }
+                
+                if (!Keyboard.isVisible()) {
+                    // Keyboard not visible, show it
+                    window.Keyboard.showFor(inputElement);
+                }
+            }, 1000);
+        })();
     </script>
 </body>
 </html>
