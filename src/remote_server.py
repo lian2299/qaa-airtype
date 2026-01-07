@@ -752,10 +752,6 @@ HTML_TEMPLATE = """
                 if (text.length === 0) {
                     // 文本框为空时，发送 Enter 事件
                     event.preventDefault();
-                    if (debounceTimer) {
-                        clearTimeout(debounceTimer);
-                        debounceTimer = null;
-                    }
                     handleSendEnter();
                 }
                 // 文本框不为空时，允许默认行为（换行），不阻止事件
