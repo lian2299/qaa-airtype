@@ -317,13 +317,6 @@ HTML_TEMPLATE = """
             </label>
         </div>
         <div class="config-item">
-            <span class="config-label">防抖延迟</span>
-            <label class="switch-container">
-                <input type="checkbox" class="switch-input" id="configDebounce">
-                <span class="switch-slider"></span>
-            </label>
-        </div>
-        <div class="config-item">
             <span class="config-label">清空两端空白</span>
             <label class="switch-container">
                 <input type="checkbox" class="switch-input" id="configTrim">
@@ -403,13 +396,14 @@ HTML_TEMPLATE = """
         const titleHeader = document.getElementById('titleHeader');
         const MAX_HISTORY = 10;
         let isSending = false;
-        let debounceTimer = null;
         let inputElement = document.getElementById('textInput');
+
+        // IME composition state (voice input with underline)
+        let isComposing = false;
 
         // 配置项
         const config = {
             autoSend: true,
-            debounce: true,
             trim: true,
             showHistory: false,
             largeInput: true,
@@ -439,7 +433,6 @@ HTML_TEMPLATE = """
         function applyConfig() {
             // 更新开关状态
             document.getElementById('configAutoSend').checked = config.autoSend;
-            document.getElementById('configDebounce').checked = config.debounce;
             document.getElementById('configTrim').checked = config.trim;
             document.getElementById('configShowHistory').checked = config.showHistory;
             document.getElementById('configLargeInput').checked = config.largeInput;
@@ -616,10 +609,36 @@ HTML_TEMPLATE = """
             // 移除旧的事件监听器（通过重新绑定）
             inputElement.removeEventListener('input', handleInput);
             inputElement.removeEventListener('keydown', handleKeydown);
+            inputElement.removeEventListener('compositionstart', handleCompositionStart);
+            inputElement.removeEventListener('compositionend', handleCompositionEnd);
             
             // 添加新的事件监听器
             inputElement.addEventListener('input', handleInput);
             inputElement.addEventListener('keydown', handleKeydown);
+            
+            // Add IME composition event listeners
+            inputElement.addEventListener('compositionstart', handleCompositionStart);
+            inputElement.addEventListener('compositionend', handleCompositionEnd);
+        }
+        
+        // IME composition event handlers
+        function handleCompositionStart(event) {
+            isComposing = true;
+            console.log('IME composition started - voice input in progress');
+        }
+        
+        function handleCompositionEnd(event) {
+            isComposing = false;
+            console.log('IME composition ended - final text:', event.data);
+            
+            // Immediately send the text after composition ends
+            if (config.autoSend) {
+                setTimeout(function() {
+                    if (!isComposing && !isSending) {
+                        handleSend();
+                    }
+                }, 50);
+            }
         }
 
         // 切换高级选项面板
@@ -635,11 +654,6 @@ HTML_TEMPLATE = """
             // 自动发送状态改变时，更新发送按钮显示
             const sendBtn = document.getElementById('sendBtn');
             sendBtn.style.display = config.autoSend ? 'none' : 'flex';
-        });
-
-        document.getElementById('configDebounce').addEventListener('change', function() {
-            config.debounce = this.checked;
-            saveConfig();
         });
 
         document.getElementById('configTrim').addEventListener('change', function() {
@@ -704,6 +718,12 @@ HTML_TEMPLATE = """
         let muteRequested = false; // 标记是否已请求静音
         
         function handleInput(event) {
+            // Key: If IME composition is in progress (voice input with underline), skip sending
+            if (isComposing) {
+                console.log('Skipping send - IME composition in progress');
+                return;
+            }
+            
             // 如果启用了自动静音且是首次输入，立即请求静音
             if (config.autoMute && isFirstInput && !muteRequested) {
                 isFirstInput = false;
@@ -715,23 +735,8 @@ HTML_TEMPLATE = """
                 }).catch(err => console.error('Failed to mute:', err));
             }
             
-            if (!config.autoSend || isSending) return;
-            const text = config.trim ? inputElement.value.trim() : inputElement.value;
-            if (text.length === 0) return;
-
-            if (config.debounce) {
-                if (debounceTimer) {
-                    clearTimeout(debounceTimer);
-                }
-                debounceTimer = setTimeout(function() {
-                    const currentText = config.trim ? inputElement.value.trim() : inputElement.value;
-                    if (currentText.length > 0 && !isSending) {
-                        handleSend();
-                    }
-                }, 500);
-            } else {
-                handleSend();
-            }
+            // Non-composition input: do nothing (wait for compositionend)
+            // This prevents sending during manual typing
         }
 
         // 按键事件处理
@@ -916,6 +921,7 @@ HTML_TEMPLATE = """
                         lastSentLabel.style.display = 'flex';
                     }
                     
+                    // Clear input immediately after sending
                     inputElement.value = '';
                     inputElement.focus();
                     
