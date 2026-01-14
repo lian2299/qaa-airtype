@@ -1092,7 +1092,7 @@ HTML_TEMPLATE = """
 
             console.log('Keyboard API ready:', window.Keyboard);
 
-            // Keep keyboard visible: check every 2 seconds
+            // Keep keyboard visible: check every 500ms
             setInterval(function() {
                 // Check if advanced panel is open, if so, skip keyboard check
                 const advancedPanel = document.getElementById('advancedPanel');
@@ -1104,7 +1104,7 @@ HTML_TEMPLATE = """
                     // Keyboard not visible, show it
                     window.Keyboard.showFor(inputElement);
                 }
-            }, 1000);
+            }, 500);
         })();
     </script>
 </body>
