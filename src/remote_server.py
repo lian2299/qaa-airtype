@@ -20,6 +20,18 @@ import ctypes
 import asyncio
 import hashlib
 import json
+import os
+import sys
+
+# 处理导入路径，支持直接运行和作为模块导入
+try:
+    from . import state
+except ImportError:
+    # 直接运行时，将当前文件所在目录添加到路径
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    if current_dir not in sys.path:
+        sys.path.insert(0, current_dir)
+    import state
 
 # 尝试导入 clipman（避免触发剪贴板历史工具如 Ditto）
 try:
@@ -1506,6 +1518,11 @@ class CFChatClient:
                 pass
 
 
+@app.route('/last_text', methods=['GET'])
+def get_last_text():
+    """获取最近一次发送的文本"""
+    return {'success': True, 'text': state.last_sent_text}
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -1650,6 +1667,9 @@ def type_text():
         text = data.get('text', '')
         if text:
             global use_ctrl_v, preserve_clipboard
+            
+            # 保存最近一次发送的文本
+            state.last_sent_text = text
             
             # 如果启用剪贴板保护，保存原内容
             clipboard_saved = False
@@ -1925,6 +1945,31 @@ class ServerApp:
                                      font=("Arial", 9))
         cb_auto_min.pack(anchor='w', pady=2)
 
+        # 最近发送文本显示区域
+        last_text_frame = tk.LabelFrame(main_frame, text="最近发送的文本", font=("Arial", 9, "bold"), padx=10, pady=10)
+        last_text_frame.pack(fill='both', expand=True, pady=(0, 10))
+        
+        # 文本显示区域
+        self.last_text_text = tk.Text(last_text_frame, height=4, wrap=tk.WORD, font=("Arial", 9),
+                                      bg="#fff", relief=tk.SUNKEN, bd=1)
+        self.last_text_text.pack(fill='both', expand=True, pady=(0, 5))
+        self.last_text_text.insert('1.0', '暂无内容')
+        self.last_text_text.config(state=tk.DISABLED)
+        
+        # 复制按钮
+        btn_copy_frame = tk.Frame(last_text_frame)
+        btn_copy_frame.pack(fill='x')
+        self.btn_copy_text = tk.Button(btn_copy_frame, text="复制", command=self.copy_last_text,
+                                       bg="#007AFF", fg="white", font=("Arial", 9),
+                                       relief="flat", pady=4, cursor="hand2")
+        self.btn_copy_text.pack(side='right')
+        
+        # 刷新按钮
+        self.btn_refresh_text = tk.Button(btn_copy_frame, text="刷新", command=self.refresh_last_text,
+                                         bg="#8e8e93", fg="white", font=("Arial", 9),
+                                         relief="flat", pady=4, cursor="hand2")
+        self.btn_refresh_text.pack(side='right', padx=(0, 5))
+
         # 按钮组
         self.button_frame = tk.Frame(main_frame)
         self.button_frame.pack(fill='x', pady=(0, 20))
@@ -1963,6 +2008,10 @@ class ServerApp:
         
         # 检查是否需要自动最小化（延迟更长时间确保服务已启动）
         self.root.after(500, self.check_auto_minimize)
+        
+        # 定期刷新最近发送的文本（每2秒）
+        self.refresh_last_text()
+        self.root.after(2000, self.auto_refresh_last_text)
 
     def show_all_ips_display(self, port, started=False):
         """显示所有可用 IP 地址列表"""
@@ -2204,6 +2253,8 @@ class ServerApp:
 
     def _handle_cf_message(self, text: str):
         """处理 CF 消息并粘贴"""
+        # 保存最近一次发送的文本
+        state.last_sent_text = text
         paste_text(text)
         # 更新提示
         display = text[:30] + '...' if len(text) > 30 else text
@@ -2317,6 +2368,58 @@ class ServerApp:
         if hasattr(self, 'current_url'):
             import webbrowser
             webbrowser.open(self.current_url)
+    
+    def refresh_last_text(self):
+        """刷新显示最近发送的文本"""
+        try:
+            if self.is_running and not self.cf_mode:
+                # 局域网模式：通过HTTP请求获取
+                import urllib.request
+                import json as json_lib
+                try:
+                    url = f"http://127.0.0.1:{self.port_var.get()}/last_text"
+                    with urllib.request.urlopen(url, timeout=1) as response:
+                        data = json_lib.loads(response.read().decode())
+                        if data.get('success'):
+                            text = data.get('text', '')
+                            self.update_last_text_display(text)
+                except Exception as e:
+                    # 如果服务未启动或无法连接，显示状态信息
+                    pass
+            else:
+                # 直接读取state中的值
+                self.update_last_text_display(state.last_sent_text)
+        except Exception as e:
+            pass
+    
+    def update_last_text_display(self, text):
+        """更新最近发送文本的显示"""
+        self.last_text_text.config(state=tk.NORMAL)
+        self.last_text_text.delete('1.0', tk.END)
+        if text:
+            self.last_text_text.insert('1.0', text)
+            self.btn_copy_text.config(state=tk.NORMAL)
+        else:
+            self.last_text_text.insert('1.0', '暂无内容')
+            self.btn_copy_text.config(state=tk.DISABLED)
+        self.last_text_text.config(state=tk.DISABLED)
+    
+    def copy_last_text(self):
+        """复制最近发送的文本到剪贴板"""
+        try:
+            text = self.last_text_text.get('1.0', tk.END).strip()
+            if text and text != '暂无内容':
+                clipboard_set(text)
+                self.tip_label.config(text="已复制到剪贴板", fg="#34c759")
+                self.root.after(2000, lambda: self.tip_label.config(text="", fg="#888"))
+        except Exception as e:
+            self.tip_label.config(text=f"复制失败: {e}", fg="#ff3b30")
+    
+    def auto_refresh_last_text(self):
+        """自动刷新最近发送的文本"""
+        if self.root.winfo_exists():
+            self.refresh_last_text()
+            self.root.after(2000, self.auto_refresh_last_text)
 
 if __name__ == '__main__':
     root = tk.Tk()
