@@ -1,3 +1,12 @@
+import os
+import sys
+
+# Compatible with pythonw / no-console: prevent Flask-Werkzeug from crashing when writing server banner
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+
 import socket
 import threading
 import tkinter as tk
@@ -13,15 +22,11 @@ from PIL import Image, ImageTk
 import io
 import pystray
 from pystray import MenuItem as item
-import os
-import sys
 import tempfile
 import ctypes
 import asyncio
 import hashlib
 import json
-import os
-import sys
 
 # 处理导入路径，支持直接运行和作为模块导入
 try:
