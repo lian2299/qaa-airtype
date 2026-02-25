@@ -1835,8 +1835,8 @@ class ServerApp:
         self.root.resizable(True, True)
         self.root.minsize(380, 560)  # 最小尺寸
 
-        # 绑定窗口关闭事件（正常退出）
-        self.root.protocol('WM_DELETE_WINDOW', self.quit_app)
+        # 关闭窗口时最小化到托盘，不退出（从托盘菜单可退出）
+        self.root.protocol('WM_DELETE_WINDOW', self.hide_window)
 
         # 设置窗口图标
         try:
@@ -2337,9 +2337,10 @@ class ServerApp:
             # 如果加载失败，创建简单图标
             icon_image = Image.new('RGB', (64, 64), color='#007AFF')
 
-        # 创建托盘菜单
+        # 创建托盘菜单（default=True 使左键单击触发「显示窗口」，Windows 上有效）
         menu = pystray.Menu(
-            item('显示窗口', self.show_window),
+            item('显示窗口', self._tray_show_window, default=True),
+            item('复制最近消息', self._tray_copy_last_text),
             item('退出', self.quit_app)
         )
 
@@ -2353,11 +2354,29 @@ class ServerApp:
         """隐藏窗口到系统托盘"""
         self.root.withdraw()
 
-    def show_window(self, icon=None, item=None):
-        """显示窗口"""
+    def _tray_show_window(self, icon=None, item=None):
+        """托盘回调：调度到主线程显示窗口（pystray 在后台线程调用）"""
+        self.root.after(0, self._do_show_window)
+
+    def _do_show_window(self):
+        """在主线程显示窗口"""
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
+
+    def show_window(self, icon=None, item=None):
+        """显示窗口（兼容直接调用或主线程）"""
+        self._do_show_window()
+
+    def _tray_copy_last_text(self, icon=None, item=None):
+        """托盘回调：调度到主线程执行复制（pystray 在后台线程调用）"""
+        self.root.after(0, self._do_copy_last_text_from_tray)
+
+    def _do_copy_last_text_from_tray(self):
+        """在主线程复制最近消息到剪贴板"""
+        text = self.get_last_sent_text()
+        if text:
+            clipboard_set(text)
 
     def quit_app(self, icon=None, item=None):
         """退出应用"""
@@ -2409,6 +2428,25 @@ class ServerApp:
             self.btn_copy_text.config(state=tk.DISABLED)
         self.last_text_text.config(state=tk.DISABLED)
     
+    def get_last_sent_text(self):
+        """获取最近一次发送的文本（不依赖窗口，供托盘等使用）"""
+        try:
+            if self.is_running and not self.cf_mode:
+                import urllib.request
+                import json as json_lib
+                try:
+                    url = f"http://127.0.0.1:{self.port_var.get()}/last_text"
+                    with urllib.request.urlopen(url, timeout=1) as response:
+                        data = json_lib.loads(response.read().decode())
+                        if data.get('success'):
+                            return (data.get('text') or '').strip()
+                except Exception:
+                    pass
+                return ''
+            return (getattr(state, 'last_sent_text', None) or '').strip()
+        except Exception:
+            return ''
+
     def copy_last_text(self):
         """复制最近发送的文本到剪贴板"""
         try:
