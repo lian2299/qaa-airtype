@@ -1,0 +1,9 @@
+flask
+pyautogui
+pyperclip
+qrcode[pil]
+Pillow
+pystray
+clipman
+websockets
+cryptography
