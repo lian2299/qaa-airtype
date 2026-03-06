@@ -1866,7 +1866,7 @@ class ServerApp:
         # 加载配置
         self.config = load_config()
         saved_mode = self.config.get('mode', 'lan')  # lan 或 cf
-        saved_port = self.config.get('port', '5000')
+        saved_port = self.config.get('port', '15000')
         saved_ip = self.config.get('ip', '')
         saved_cf_url = self.config.get('cf_url', '')
         saved_cf_key = self.config.get('cf_key', '')
@@ -2042,10 +2042,58 @@ class ServerApp:
         )
 
     def run_flask(self, host, port):
-        try:
-            app.run(host=host, port=port, debug=False, use_reloader=False)
-        except Exception as e:
-            print(f"Error: {e}")
+        """Run Flask; on Windows port binding errors, try fallback ports 5001, 8080."""
+        wanted = int(port)
+        seen = set()
+        fallback_ports = []
+        for p in (wanted, 5001, 8080):
+            if p not in seen:
+                seen.add(p)
+                fallback_ports.append(p)
+        last_error = None
+        for p in fallback_ports:
+            try:
+                if p != int(port):
+                    self.root.after(0, lambda pp=p: self._on_port_fallback(pp))
+                app.run(host=host, port=p, debug=False, use_reloader=False)
+                return
+            except OSError as e:
+                last_error = e
+                err_str = str(e).lower()
+                is_bind_error = (
+                    '10013' in err_str or 'access' in err_str or 'permission' in err_str
+                    or 'denied' in err_str or 'wsaeacces' in err_str
+                    or '以一种访问权限不允许' in str(e) or '套接字' in str(e)
+                )
+                if is_bind_error and p != fallback_ports[-1]:
+                    continue
+                if is_bind_error:
+                    self.root.after(0, self._on_port_bind_failed)
+                    return
+                raise
+        if last_error:
+            self.root.after(0, self._on_port_bind_failed)
+            print(f"Error: {last_error}")
+
+    def _on_port_fallback(self, port):
+        """Notify user that a fallback port is used (called from main thread)."""
+        self.port_var.set(str(port))
+        self.config['port'] = str(port)
+        save_config(self.config)
+        self.tip_label.config(text="原端口不可用，已改用端口 %s" % port, fg="#888")
+
+    def _on_port_bind_failed(self):
+        """Show error when all port attempts failed (called from main thread)."""
+        self.is_running = False
+        self.btn_start.config(text="启动服务", state="normal", bg="#007AFF")
+        self.port_entry.config(state="normal", bg="white")
+        self.ip_combo.config(state="readonly")
+        self.tip_label.config(text="", fg="#888")
+        messagebox.showerror(
+            "端口无法绑定",
+            "无法绑定所选端口（可能被系统保留或占用）。\n\n"
+            "请将端口改为 5001 或 8080 后重新启动服务。"
+        )
 
     def generate_qr(self, url, target_size=200):
         """生成二维码图像，自动调整大小以适应目标尺寸"""
