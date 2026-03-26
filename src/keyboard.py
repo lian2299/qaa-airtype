@@ -168,6 +168,54 @@ def send_enter_windows():
         return False
 
 
+def send_shift_enter_windows():
+    """Send Shift+Enter combo using Windows API"""
+    if not IS_WINDOWS:
+        return False
+
+    user32 = None
+    shift_scan = None
+    return_scan = None
+    shift_pressed = False
+    enter_pressed = False
+
+    try:
+        user32 = ctypes.windll.user32
+        VK_RETURN = 0x0D
+        shift_scan = user32.MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC)
+        return_scan = user32.MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC)
+
+        user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE, 0)
+        shift_pressed = True
+        time.sleep(0.02)
+
+        user32.keybd_event(VK_RETURN, return_scan, KEYEVENTF_SCANCODE, 0)
+        enter_pressed = True
+        time.sleep(0.02)
+
+        user32.keybd_event(VK_RETURN, return_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+        enter_pressed = False
+        time.sleep(0.02)
+
+        user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+        shift_pressed = False
+        return True
+    except Exception as e:
+        print(f"Windows API error for Shift+Enter: {e}")
+        return False
+    finally:
+        if user32 and shift_scan is not None and return_scan is not None:
+            try:
+                if enter_pressed:
+                    user32.keybd_event(VK_RETURN, return_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.02)
+                if shift_pressed:
+                    user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.02)
+            except Exception as cleanup_error:
+                print(f"Error during key cleanup: {cleanup_error}")
+
+
 def send_backspace_windows():
     """Send Backspace key using Windows API"""
     if not IS_WINDOWS:

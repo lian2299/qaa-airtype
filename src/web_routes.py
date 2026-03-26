@@ -5,7 +5,7 @@ from flask import request, render_template_string
 from .utils import IS_WINDOWS
 from .audio import set_system_mute_windows
 from .keyboard import (
-    paste_text, send_ctrl_z_windows, send_enter_windows, send_backspace_windows
+    paste_text, send_ctrl_z_windows, send_enter_windows, send_shift_enter_windows, send_backspace_windows
 )
 from .state import use_ctrl_v, preserve_clipboard
 
@@ -75,6 +75,7 @@ def register_routes(app, html_template):
         try:
             data = request.get_json()
             enter = data.get('enter', False)
+            shift_enter = data.get('shift_enter', False)
             backspace = data.get('backspace', False)
             undo = data.get('undo', False)
             
@@ -104,6 +105,20 @@ def register_routes(app, html_template):
                     # Mac/Linux: use pyautogui
                     pyautogui.press('enter')
                 
+                return {'success': True}
+
+            # If just sending Shift+Enter combo
+            if shift_enter:
+                if IS_WINDOWS:
+                    try:
+                        send_shift_enter_windows()
+                    except Exception as e:
+                        print(f"Windows API error for Shift+Enter: {e}")
+                        pyautogui.hotkey('shift', 'enter')
+                else:
+                    # Mac/Linux: use pyautogui
+                    pyautogui.hotkey('shift', 'enter')
+
                 return {'success': True}
             
             # If just sending Backspace key

@@ -758,6 +758,18 @@ HTML_TEMPLATE = """
 
         // 按键事件处理
         function handleKeydown(event) {
+            if (event.key === "F1") {
+                event.preventDefault();
+                handleSendShiftEnter();
+                return;
+            }
+
+            if (event.key === "F2") {
+                event.preventDefault();
+                handleSendBackspace();
+                return;
+            }
+
             if (event.key === "Enter") {
                 // Shift+Enter 始终允许换行
                 if (event.shiftKey) {
@@ -794,6 +806,38 @@ HTML_TEMPLATE = """
             .then(data => {
                 if (data.success) {
                     status.innerText = "✓ 已发送 Enter";
+                    status.style.color = "#34c759";
+                    setTimeout(() => status.innerText = "", 1500);
+                } else { throw new Error("Server error"); }
+            })
+            .catch(err => {
+                status.innerText = "✕ 发送失败";
+                status.style.color = "#ff3b30";
+            })
+            .finally(() => {
+                isSending = false;
+            });
+        }
+
+        // 发送Shift+Enter键
+        function handleSendShiftEnter(event) {
+            if (event) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+            if (isSending) return;
+            isSending = true;
+            status.innerText = "发送中...";
+            status.style.color = "#888";
+            fetch('/type', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ text: '', shift_enter: true })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    status.innerText = "✓ 已发送 Shift+Enter";
                     status.style.color = "#34c759";
                     setTimeout(() => status.innerText = "", 1500);
                 } else { throw new Error("Server error"); }
@@ -1310,6 +1354,54 @@ def send_shift_insert_windows():
                 print(f"Error during key cleanup: {cleanup_error}")
 
 
+def send_shift_enter_windows():
+    """使用 Windows API 发送 Shift+Enter 组合键"""
+    if not IS_WINDOWS:
+        return False
+
+    user32 = None
+    shift_scan = None
+    return_scan = None
+    shift_pressed = False
+    enter_pressed = False
+
+    try:
+        user32 = ctypes.windll.user32
+        VK_RETURN = 0x0D
+        shift_scan = user32.MapVirtualKeyW(VK_SHIFT, MAPVK_VK_TO_VSC)
+        return_scan = user32.MapVirtualKeyW(VK_RETURN, MAPVK_VK_TO_VSC)
+
+        user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE, 0)
+        shift_pressed = True
+        time.sleep(0.02)
+
+        user32.keybd_event(VK_RETURN, return_scan, KEYEVENTF_SCANCODE, 0)
+        enter_pressed = True
+        time.sleep(0.02)
+
+        user32.keybd_event(VK_RETURN, return_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+        enter_pressed = False
+        time.sleep(0.02)
+
+        user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+        shift_pressed = False
+        return True
+    except Exception as e:
+        print(f"Windows API error for Shift+Enter: {e}")
+        return False
+    finally:
+        if user32 and shift_scan is not None and return_scan is not None:
+            try:
+                if enter_pressed:
+                    user32.keybd_event(VK_RETURN, return_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.02)
+                if shift_pressed:
+                    user32.keybd_event(VK_SHIFT, shift_scan, KEYEVENTF_SCANCODE | KEYEVENTF_KEYUP, 0)
+                    time.sleep(0.02)
+            except Exception as cleanup_error:
+                print(f"Error during key cleanup: {cleanup_error}")
+
+
 def send_ctrl_v_windows():
     """使用 Windows API 发送 Ctrl+V 组合键"""
     if not IS_WINDOWS:
@@ -1590,6 +1682,7 @@ def type_text():
     try:
         data = request.get_json()
         enter = data.get('enter', False)
+        shift_enter = data.get('shift_enter', False)
         backspace = data.get('backspace', False)
         undo = data.get('undo', False)
         
@@ -1644,6 +1737,20 @@ def type_text():
                 # Mac/Linux: 使用 pyautogui
                 pyautogui.press('enter')
             
+            return {'success': True}
+
+        # 如果只是发送Shift+Enter组合键
+        if shift_enter:
+            if IS_WINDOWS:
+                try:
+                    send_shift_enter_windows()
+                except Exception as e:
+                    print(f"Windows API error for Shift+Enter: {e}")
+                    pyautogui.hotkey('shift', 'enter')
+            else:
+                # Mac/Linux: 使用 pyautogui
+                pyautogui.hotkey('shift', 'enter')
+
             return {'success': True}
         
         # 如果只是发送Backspace键
