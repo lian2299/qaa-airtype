@@ -1,8 +1,13 @@
 """Keyboard input module"""
 import time
 import pyautogui
-from .utils import IS_WINDOWS, VK_SHIFT, VK_INSERT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC
-from .clipboard import clipboard_get, clipboard_set
+
+try:
+    from .utils import IS_WINDOWS, VK_SHIFT, VK_INSERT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC
+    from .clipboard import clipboard_get, clipboard_set
+except ImportError:
+    from utils import IS_WINDOWS, VK_SHIFT, VK_INSERT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC
+    from clipboard import clipboard_get, clipboard_set
 
 if IS_WINDOWS:
     import ctypes
@@ -235,6 +240,103 @@ def send_backspace_windows():
         return False
 
 
+def send_paste_hotkey(use_ctrl_v=False):
+    """Send only the paste shortcut (Ctrl+V or Shift+Insert); does not touch clipboard."""
+    if IS_WINDOWS:
+        if use_ctrl_v:
+            return bool(send_ctrl_v_windows())
+        ok = send_shift_insert_windows()
+        ensure_insert_mode_reset()
+        return bool(ok)
+    if use_ctrl_v:
+        pyautogui.hotkey('ctrl', 'v')
+    else:
+        pyautogui.hotkey('shift', 'insert')
+    return True
+
+
+def paste_literal_fragment(text, use_ctrl_v=False):
+    """Set clipboard to fragment, send paste hotkey. Caller restores staged clipboard after."""
+    clipboard_set(text)
+    time.sleep(0.1)
+    send_paste_hotkey(use_ctrl_v=use_ctrl_v)
+
+
+# Allowed token names for send_hotkey (lowercase after normalize)
+HOTKEY_KEY_WHITELIST = frozenset({
+    'ctrl', 'shift', 'alt', 'win',
+    'enter', 'return', 'tab', 'backspace', 'insert', 'delete', 'escape', 'space',
+    'up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown',
+    'v', 'c', 'x', 'z', 'a', 'b', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm',
+    'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'w', 'y',
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+    'f1', 'f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8', 'f9', 'f10', 'f11', 'f12',
+})
+
+
+def _normalize_hotkey_token(name):
+    n = (name or '').strip().lower()
+    if n == 'control':
+        n = 'ctrl'
+    return n
+
+
+def _pyautogui_hotkey_names(keys):
+    """Map whitelist tokens to pyautogui key names."""
+    out = []
+    for k in keys:
+        if k == 'win':
+            out.append('winleft')
+        else:
+            out.append(k)
+    return out
+
+
+def send_hotkey(keys):
+    """
+    Send a combo from a whitelist-validated list of key names (lowercase).
+    Returns True on success, False if invalid or send failed.
+    """
+    if not keys:
+        return False
+    normalized = [_normalize_hotkey_token(k) for k in keys]
+    for k in normalized:
+        if k not in HOTKEY_KEY_WHITELIST:
+            print(f"send_hotkey: disallowed key '{k}'")
+            return False
+
+    # Optimized Windows paths for common shortcuts
+    if IS_WINDOWS and len(normalized) == 2:
+        a, b = normalized[0], normalized[1]
+        if a == 'ctrl' and b == 'v':
+            return bool(send_ctrl_v_windows())
+        if a == 'ctrl' and b == 'z':
+            return bool(send_ctrl_z_windows())
+        if a == 'shift' and b == 'insert':
+            ok = send_shift_insert_windows()
+            ensure_insert_mode_reset()
+            return bool(ok)
+        if a == 'shift' and b in ('enter', 'return'):
+            return bool(send_shift_enter_windows())
+
+    if IS_WINDOWS and len(normalized) == 1:
+        k = normalized[0]
+        if k in ('enter', 'return'):
+            return bool(send_enter_windows())
+        if k == 'backspace':
+            return bool(send_backspace_windows())
+
+    try:
+        pg_keys = _pyautogui_hotkey_names(normalized)
+        pyautogui.hotkey(*pg_keys)
+        if IS_WINDOWS and 'insert' in normalized:
+            ensure_insert_mode_reset()
+        return True
+    except Exception as e:
+        print(f"send_hotkey failed: {e}")
+        return False
+
+
 def paste_text(text, use_ctrl_v=False, preserve_clipboard=False):
     """Copy to clipboard and paste"""
     # If clipboard protection enabled, save original content
@@ -252,22 +354,7 @@ def paste_text(text, use_ctrl_v=False, preserve_clipboard=False):
     clipboard_set(text)
     time.sleep(0.1)
     
-    # Choose paste method based on config
-    if IS_WINDOWS:
-        if use_ctrl_v:
-            # Use Ctrl+V to paste
-            send_ctrl_v_windows()
-        else:
-            # Use Shift+Insert to paste
-            send_shift_insert_windows()
-            # Check and reset Insert state
-            ensure_insert_mode_reset()
-    else:
-        # Mac/Linux
-        if use_ctrl_v:
-            pyautogui.hotkey('ctrl', 'v')
-        else:
-            pyautogui.hotkey('shift', 'insert')
+    send_paste_hotkey(use_ctrl_v=use_ctrl_v)
     
     # If clipboard protection enabled, restore original content (increase wait time)
     if preserve_clipboard and clipboard_saved:

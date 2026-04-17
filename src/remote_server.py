@@ -38,6 +38,11 @@ except ImportError:
         sys.path.insert(0, current_dir)
     import state
 
+try:
+    from .keyword_pipeline import execute_typed_text
+except ImportError:
+    from keyword_pipeline import execute_typed_text
+
 # 尝试导入 clipman（避免触发剪贴板历史工具如 Ditto）
 try:
     import clipman
@@ -1618,7 +1623,7 @@ class CFChatClient:
 @app.route('/last_text', methods=['GET'])
 def get_last_text():
     """获取最近一次发送的文本"""
-    return {'success': True, 'text': state.last_sent_text}
+    return {'success': True, 'text': getattr(state, 'last_sent_text', '') or ''}
 
 @app.route('/')
 def index():
@@ -1779,70 +1784,13 @@ def type_text():
         text = data.get('text', '')
         if text:
             global use_ctrl_v, preserve_clipboard
-            
-            # 保存最近一次发送的文本
+
             state.last_sent_text = text
-            
-            # 如果启用剪贴板保护，保存原内容
-            clipboard_saved = False
-            original_clipboard = None
-            if preserve_clipboard:
-                try:
-                    original_clipboard = clipboard_get()
-                    clipboard_saved = True
-                    print(f"[Clipboard] Saved original content (length: {len(original_clipboard) if original_clipboard else 0})")
-                except Exception as e:
-                    print(f"[Clipboard] Failed to save: {e}")
-            
-            # 复制文本到剪贴板
-            clipboard_set(text)
-            time.sleep(0.1)
 
-            # 根据配置选择粘贴方式
-            if IS_WINDOWS:
-                if use_ctrl_v:
-                    # 使用 Ctrl+V 粘贴
-                    success = send_ctrl_v_windows()
-                else:
-                    # 使用 Shift+Insert 粘贴（兼容终端）
-                    success = send_shift_insert_windows()
-                    # 检查并重置 Insert 状态（防止停留在覆盖模式）
-                    ensure_insert_mode_reset()
-                
-                if not success:
-                    print("Paste failed: Windows API call failed")
-                    # 恢复剪贴板后返回错误
-                    if preserve_clipboard and clipboard_saved:
-                        try:
-                            if original_clipboard is not None:
-                                clipboard_set(original_clipboard)
-                            else:
-                                clipboard_set('')
-                            print("[Clipboard] Restored after failure")
-                        except:
-                            pass
-                    return {'success': False, 'error': 'Paste failed'}
-            else:
-                # Mac/Linux: 使用 pyautogui
-                if use_ctrl_v:
-                    pyautogui.hotkey('ctrl', 'v')
-                else:
-                    pyautogui.hotkey('shift', 'insert')
-            
-            # 如果启用剪贴板保护，恢复原内容（增加等待时间）
-            if preserve_clipboard and clipboard_saved:
-                time.sleep(0.15)  # 增加等待时间到 150ms，确保粘贴操作完成
-                try:
-                    if original_clipboard is not None:
-                        clipboard_set(original_clipboard)
-                    else:
-                        # 如果原内容是 None，清空剪贴板
-                        clipboard_set('')
-                    print("[Clipboard] Restored original content")
-                except Exception as e:
-                    print(f"[Clipboard] Failed to restore: {e}")
-
-            return {'success': True}
+            ok = execute_typed_text(text, use_ctrl_v, preserve_clipboard)
+            if ok:
+                return {'success': True}
+            return {'success': False, 'error': 'Paste failed'}
     except Exception as e:
         print(f"Error in type_text: {e}")
         pass
@@ -2057,6 +2005,49 @@ class ServerApp:
                                      font=("Arial", 9))
         cb_auto_min.pack(anchor='w', pady=2)
 
+        keyword_frame = tk.LabelFrame(
+            main_frame, text="Keyword -> hotkey (JSON array)", font=("Arial", 10, "bold"), padx=10, pady=8
+        )
+        keyword_frame.pack(fill='x', pady=(0, 10))
+        kw_raw = self.config.get('keyword_actions')
+        if kw_raw:
+            kw_init = json.dumps(kw_raw, ensure_ascii=False, indent=2)
+        else:
+            kw_init = (
+                '[\n'
+                '  {"keyword": "kwPaste", "action": "paste"},\n'
+                '  {"keyword": "kwShiftEnter", "keys": ["shift", "enter"]}\n'
+                ']\n'
+            )
+        self.keyword_actions_text = tk.Text(keyword_frame, height=7, font=("Consolas", 9), wrap=tk.WORD)
+        self.keyword_actions_text.pack(fill='x')
+        self.keyword_actions_text.insert('1.0', kw_init)
+
+        self.strip_punct_around_kw_var = tk.BooleanVar(
+            value=self.config.get('strip_punctuation_around_keywords', False)
+        )
+        cb_strip_kw = tk.Checkbutton(
+            keyword_frame,
+            text="去掉热词两侧标点（语音输入）",
+            variable=self.strip_punct_around_kw_var,
+            command=self.on_strip_punct_around_kw_changed,
+            font=("Arial", 9),
+        )
+        cb_strip_kw.pack(anchor='w', pady=(6, 0))
+
+        self.btn_keyword_apply = tk.Button(
+            keyword_frame,
+            text="Apply keyword rules",
+            command=self.on_keyword_actions_apply,
+            bg="#007AFF",
+            fg="white",
+            font=("Arial", 9),
+            relief="flat",
+            pady=4,
+            cursor="hand2",
+        )
+        self.btn_keyword_apply.pack(anchor='e', pady=(6, 0))
+
         # 最近发送文本显示区域
         last_text_frame = tk.LabelFrame(main_frame, text="最近发送的文本", font=("Arial", 9, "bold"), padx=10, pady=10)
         last_text_frame.pack(fill='both', expand=True, pady=(0, 10))
@@ -2244,6 +2235,37 @@ class ServerApp:
         status = "enabled" if auto_minimize else "disabled"
         print(f"Auto minimize: {status}")
 
+    def on_strip_punct_around_kw_changed(self):
+        """Save strip-punctuation-around-keywords toggle."""
+        self.config['strip_punctuation_around_keywords'] = self.strip_punct_around_kw_var.get()
+        save_config(self.config)
+
+    def on_keyword_actions_apply(self):
+        """Parse JSON keyword_actions and save to config."""
+        try:
+            from .keyword_pipeline import validate_keyword_actions
+        except ImportError:
+            from keyword_pipeline import validate_keyword_actions
+        raw = self.keyword_actions_text.get('1.0', tk.END).strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as e:
+            messagebox.showerror('Invalid JSON', str(e))
+            return
+        if not isinstance(data, list):
+            messagebox.showerror('Invalid', 'Root must be a JSON array')
+            return
+        cleaned = validate_keyword_actions(data)
+        self.config['keyword_actions'] = cleaned
+        save_config(self.config)
+        self.keyword_actions_text.delete('1.0', tk.END)
+        self.keyword_actions_text.insert('1.0', json.dumps(cleaned, ensure_ascii=False, indent=2))
+        dropped = len(data) - len(cleaned)
+        msg = 'Saved %d rule(s).' % len(cleaned)
+        if dropped > 0:
+            msg += ' (%d invalid or duplicate skipped.)' % dropped
+        messagebox.showinfo('Keyword rules', msg)
+
     def check_auto_minimize(self):
         """检查是否需要自动最小化窗口（调用 hide_window 方法隐藏到系统托盘）"""
         global auto_minimize
@@ -2413,9 +2435,9 @@ class ServerApp:
 
     def _handle_cf_message(self, text: str):
         """处理 CF 消息并粘贴"""
-        # 保存最近一次发送的文本
+        global use_ctrl_v, preserve_clipboard
         state.last_sent_text = text
-        paste_text(text)
+        execute_typed_text(text, use_ctrl_v, preserve_clipboard)
         # 更新提示
         display = text[:30] + '...' if len(text) > 30 else text
         self.tip_label.config(text=f"已粘贴: {display}")
@@ -2567,7 +2589,7 @@ class ServerApp:
                     pass
             else:
                 # 直接读取state中的值
-                self.update_last_text_display(state.last_sent_text)
+                self.update_last_text_display(getattr(state, 'last_sent_text', '') or '')
         except Exception as e:
             pass
     

@@ -4,3 +4,6 @@ use_ctrl_v = False  # False: use Shift+Insert, True: use Ctrl+V
 preserve_clipboard = False  # Whether to protect clipboard (don't overwrite)
 auto_minimize = False  # Auto-minimize on startup
 
+# Last payload sent via /type or CF (used by /last_text and tray UI)
+last_sent_text = ''
+

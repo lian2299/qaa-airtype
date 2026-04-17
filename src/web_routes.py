@@ -1,13 +1,13 @@
 """Flask web routes module"""
-import time
 import pyautogui
 from flask import request, render_template_string
 from .utils import IS_WINDOWS
 from .audio import set_system_mute_windows
 from .keyboard import (
-    paste_text, send_ctrl_z_windows, send_enter_windows, send_shift_enter_windows, send_backspace_windows
+    send_ctrl_z_windows, send_enter_windows, send_shift_enter_windows, send_backspace_windows
 )
-from .state import use_ctrl_v, preserve_clipboard
+from .keyword_pipeline import execute_typed_text
+from . import state
 
 # Import audio state variables
 from . import audio
@@ -138,9 +138,11 @@ def register_routes(app, html_template):
             # Send text
             text = data.get('text', '')
             if text:
-                # Use paste_text function from keyboard module
-                paste_text(text, use_ctrl_v=use_ctrl_v, preserve_clipboard=preserve_clipboard)
-                return {'success': True}
+                state.last_sent_text = text
+                ok = execute_typed_text(text)
+                if ok:
+                    return {'success': True}
+                return {'success': False, 'error': 'Paste failed'}
         except Exception as e:
             print(f"Error in type_text: {e}")
             pass
