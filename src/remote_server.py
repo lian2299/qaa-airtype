@@ -422,6 +422,8 @@ HTML_TEMPLATE = """
 
         // IME composition state (voice input with underline)
         let isComposing = false;
+        let previewSyncTimer = null;
+        let lastPreviewText = null;
 
         // 配置项
         const config = {
@@ -626,12 +628,47 @@ HTML_TEMPLATE = """
             }
         }
 
+        function syncInputPreview(options = {}) {
+            if (!inputElement) return;
+
+            const text = inputElement.value || '';
+            if (!options.force && text === lastPreviewText) {
+                return;
+            }
+            lastPreviewText = text;
+
+            const payload = JSON.stringify({ text: text });
+            if (options.beacon && navigator.sendBeacon) {
+                const blob = new Blob([payload], { type: 'application/json' });
+                navigator.sendBeacon('/input_preview', blob);
+                return;
+            }
+
+            fetch('/input_preview', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: payload,
+                keepalive: !!options.keepalive
+            }).catch(err => console.error('Failed to sync input preview:', err));
+        }
+
+        function scheduleInputPreviewSync() {
+            if (previewSyncTimer) {
+                clearTimeout(previewSyncTimer);
+            }
+            previewSyncTimer = setTimeout(function() {
+                previewSyncTimer = null;
+                syncInputPreview();
+            }, 60);
+        }
+
         // 设置输入框事件
         function setupInputEvents() {
             // 移除旧的事件监听器（通过重新绑定）
             inputElement.removeEventListener('input', handleInput);
             inputElement.removeEventListener('keydown', handleKeydown);
             inputElement.removeEventListener('compositionstart', handleCompositionStart);
+            inputElement.removeEventListener('compositionupdate', handleCompositionUpdate);
             inputElement.removeEventListener('compositionend', handleCompositionEnd);
             
             // 添加新的事件监听器
@@ -640,17 +677,25 @@ HTML_TEMPLATE = """
             
             // Add IME composition event listeners
             inputElement.addEventListener('compositionstart', handleCompositionStart);
+            inputElement.addEventListener('compositionupdate', handleCompositionUpdate);
             inputElement.addEventListener('compositionend', handleCompositionEnd);
+            syncInputPreview({ force: true });
         }
         
         // IME composition event handlers
         function handleCompositionStart(event) {
             isComposing = true;
+            scheduleInputPreviewSync();
             console.log('IME composition started - voice input in progress');
+        }
+
+        function handleCompositionUpdate(event) {
+            scheduleInputPreviewSync();
         }
         
         function handleCompositionEnd(event) {
             isComposing = false;
+            scheduleInputPreviewSync();
             console.log('IME composition ended - final text:', event.data);
             
             // Immediately send the text after composition ends
@@ -740,6 +785,8 @@ HTML_TEMPLATE = """
         let muteRequested = false; // 标记是否已请求静音
         
         function handleInput(event) {
+            scheduleInputPreviewSync();
+
             // Key: If IME composition is in progress (voice input with underline), skip sending
             if (isComposing) {
                 console.log('Skipping send - IME composition in progress');
@@ -931,6 +978,14 @@ HTML_TEMPLATE = """
             });
         }
 
+        window.addEventListener('beforeunload', function() {
+            if (previewSyncTimer) {
+                clearTimeout(previewSyncTimer);
+                previewSyncTimer = null;
+            }
+            syncInputPreview({ force: true, beacon: true });
+        });
+
         // 点击页面任意位置聚焦输入框（除了按钮和历史记录）
         document.body.addEventListener('click', function(event) {
             const target = event.target;
@@ -959,6 +1014,7 @@ HTML_TEMPLATE = """
         function handleClear() {
             inputElement.value = '';
             inputElement.focus();
+            syncInputPreview({ force: true });
         }
         function sendRequest(text) {
             if (isSending) return;
@@ -986,6 +1042,7 @@ HTML_TEMPLATE = """
                     // Clear input immediately after sending
                     inputElement.value = '';
                     inputElement.focus();
+                    syncInputPreview({ force: true });
                     
                     // 发送完成后，如果启用了自动静音，恢复音量
                     if (config.autoMute && muteRequested) {
@@ -1040,6 +1097,7 @@ HTML_TEMPLATE = """
                 li.className = 'history-item';
                 li.onclick = () => { 
                     inputElement.value = text; 
+                    syncInputPreview({ force: true });
                     handleSend(); 
                 };
                 li.innerHTML = `<span class="history-text">${escapeHtml(text)}</span><span class="history-arrow">⤶</span>`;
@@ -1199,6 +1257,7 @@ current_muted_by_app = False  # 记录当前是否由应用控制静音
 use_ctrl_v = False  # False: 使用 Shift+Insert, True: 使用 Ctrl+V
 preserve_clipboard = False  # 是否保护剪贴板（不覆盖）
 auto_minimize = False  # 启动后自动最小化
+input_preview_update_handler = None  # GUI 主线程中的输入预览浮层更新入口
 
 
 # --- 剪贴板操作包装函数（支持 clipman 避免触发 Ditto 等工具）---
@@ -1625,6 +1684,22 @@ def get_last_text():
     """获取最近一次发送的文本"""
     return {'success': True, 'text': getattr(state, 'last_sent_text', '') or ''}
 
+@app.route('/input_preview', methods=['POST'])
+def update_input_preview():
+    """更新前端输入预览；仅用于桌面状态提示，不触发发送。"""
+    try:
+        data = request.get_json(silent=True) or {}
+        text = state.set_input_preview(data.get('text', ''))
+
+        handler = input_preview_update_handler
+        if handler:
+            handler(text)
+
+        return {'success': True, 'length': len(text)}
+    except Exception as e:
+        print(f"Error in update_input_preview: {e}")
+        return {'success': False}
+
 @app.route('/')
 def index():
     return render_template_string(HTML_TEMPLATE)
@@ -1917,6 +1992,11 @@ class ServerApp:
         self.is_running = False
         self.cf_client = None  # CF 模式客户端
         self.cf_mode = False   # 是否为 CF 模式
+        self.input_preview_window = None
+        self.input_preview_text_label = None
+
+        global input_preview_update_handler
+        input_preview_update_handler = self.schedule_input_preview_update
 
         # 加载配置
         self.config = load_config()
@@ -2138,6 +2218,156 @@ class ServerApp:
             fg="#333",
             font=("Arial", 9)
         )
+
+    def schedule_input_preview_update(self, text):
+        """Thread-safe entry point used by Flask routes to update the desktop input indicator."""
+        try:
+            self.root.after(0, lambda value=text: self.update_input_preview_overlay(value))
+        except tk.TclError:
+            pass
+
+    def _ensure_input_preview_window(self):
+        if self.input_preview_window and self.input_preview_window.winfo_exists():
+            return
+
+        win = tk.Toplevel(self.root)
+        win.withdraw()
+        win.overrideredirect(True)
+        win.configure(bg="#111827")
+        win.attributes("-topmost", True)
+        try:
+            win.attributes("-alpha", 0.94)
+        except tk.TclError:
+            pass
+        try:
+            win.attributes("-toolwindow", True)
+        except tk.TclError:
+            pass
+
+        frame = tk.Frame(
+            win,
+            bg="#111827",
+            padx=18,
+            pady=12,
+            highlightthickness=1,
+            highlightbackground="#3b82f6",
+            highlightcolor="#3b82f6",
+        )
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(
+            frame,
+            text="正在接收文字输入",
+            bg="#111827",
+            fg="#93c5fd",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+
+        self.input_preview_text_label = tk.Label(
+            frame,
+            text="",
+            bg="#111827",
+            fg="#f9fafb",
+            font=("Microsoft YaHei UI", 12),
+            justify="left",
+            anchor="w",
+        )
+        self.input_preview_text_label.pack(fill="x", pady=(6, 0))
+
+        self.input_preview_window = win
+        self._apply_input_preview_window_styles()
+
+    def _apply_input_preview_window_styles(self):
+        if not IS_WINDOWS or not self.input_preview_window:
+            return
+
+        try:
+            win = self.input_preview_window
+            win.update_idletasks()
+            hwnd = win.winfo_id()
+            user32 = ctypes.windll.user32
+
+            GWL_EXSTYLE = -20
+            WS_EX_TOPMOST = 0x00000008
+            WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_NOACTIVATE = 0x08000000
+            HWND_TOPMOST = -1
+            SWP_NOSIZE = 0x0001
+            SWP_NOMOVE = 0x0002
+            SWP_NOACTIVATE = 0x0010
+
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            user32.SetWindowLongW(
+                hwnd,
+                GWL_EXSTYLE,
+                style | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            )
+            user32.SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        except Exception as e:
+            print(f"Input preview window style failed: {e}")
+
+    def _format_input_preview_text(self, text):
+        display = (text or '').replace('\r\n', '\n').replace('\r', '\n')
+        max_chars = 360
+        if len(display) > max_chars:
+            display = "..." + display[-max_chars:]
+
+        lines = display.split('\n')
+        max_lines = 5
+        if len(lines) > max_lines:
+            display = "...\n" + "\n".join(lines[-max_lines:])
+
+        return display
+
+    def _position_input_preview_window(self):
+        win = self.input_preview_window
+        if not win:
+            return
+
+        screen_width = self.root.winfo_screenwidth()
+        screen_height = self.root.winfo_screenheight()
+        max_width = max(260, min(820, screen_width - 48))
+        min_width = 360 if screen_width >= 420 else 260
+
+        if self.input_preview_text_label:
+            self.input_preview_text_label.configure(wraplength=max_width - 42)
+
+        win.update_idletasks()
+        width = min(max_width, max(min_width, win.winfo_reqwidth()))
+        if self.input_preview_text_label:
+            self.input_preview_text_label.configure(wraplength=width - 42)
+            win.update_idletasks()
+
+        height = win.winfo_reqheight()
+        x = max(8, (screen_width - width) // 2)
+        y = max(8, screen_height - height - 90)
+        win.geometry(f"{width}x{height}+{x}+{y}")
+
+    def update_input_preview_overlay(self, text):
+        """Show, update, or hide the bottom-center desktop input indicator."""
+        self._ensure_input_preview_window()
+        if not self.input_preview_window:
+            return
+
+        if not (text or '').strip():
+            self.input_preview_window.withdraw()
+            return
+
+        self.input_preview_text_label.config(text=self._format_input_preview_text(text))
+        self._position_input_preview_window()
+        self.input_preview_window.deiconify()
+        self.input_preview_window.attributes("-topmost", True)
+        self._apply_input_preview_window_styles()
+        self.input_preview_window.lift()
 
     def run_flask(self, host, port):
         """Run Flask; on Windows port binding errors, try fallback ports 5001, 8080."""
@@ -2557,6 +2787,15 @@ class ServerApp:
 
     def quit_app(self, icon=None, item=None):
         """退出应用"""
+        global input_preview_update_handler
+        input_preview_update_handler = None
+        state.set_input_preview('')
+        try:
+            if self.input_preview_window and self.input_preview_window.winfo_exists():
+                self.input_preview_window.destroy()
+        except tk.TclError:
+            pass
+
         # 停止 CF 客户端
         if self.cf_client:
             self.cf_client.stop()

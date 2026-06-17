@@ -20,6 +20,17 @@ def register_routes(app, html_template):
     def index():
         return render_template_string(html_template)
 
+    @app.route('/input_preview', methods=['POST'])
+    def update_input_preview():
+        """Update frontend input preview state without sending text."""
+        try:
+            data = request.get_json(silent=True) or {}
+            text = state.set_input_preview(data.get('text', ''))
+            return {'success': True, 'length': len(text)}
+        except Exception as e:
+            print(f"Error in update_input_preview: {e}")
+            return {'success': False}
+
     @app.route('/mute', methods=['POST'])
     def toggle_mute():
         """Toggle auto mute feature"""
