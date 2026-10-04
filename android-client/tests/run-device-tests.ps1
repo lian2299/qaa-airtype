@@ -33,7 +33,7 @@ try {
     Run-Native $adb @('-s',$Serial,'reverse','tcp:15001','tcp:15001')
     $result = & $adb -s $Serial shell am instrument -w local.qaa.airtype.tests/local.qaa.airtype.TransferTest
     $result | Tee-Object -FilePath "$outputDir\result.txt"
-    if ($LASTEXITCODE -ne 0 -or !($result -match 'TransferTest: 18 checks passed')) { throw 'Device transfer checks failed' }
+    if ($LASTEXITCODE -ne 0 -or !($result -match 'TransferTest: 24 checks passed')) { throw 'Device transfer checks failed' }
 } finally {
     $env:JAVA_HOME = $previousJavaHome; $env:PATH = $previousPath
     & $adb -s $Serial reverse --remove tcp:15001 | Out-Null

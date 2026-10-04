@@ -15,7 +15,11 @@ final class ServerClient {
     static final Handler main = new Handler(Looper.getMainLooper());
     static URL endpoint(String base, String path) throws Exception {
         URI uri = new URI(base);
-        return new URI(uri.getScheme(), null, uri.getHost(), uri.getPort(), path, null, null).toURL();
+        String prefix = uri.getPath();
+        if (prefix == null || prefix.isEmpty()) prefix = "/";
+        if (!prefix.endsWith("/")) prefix += "/";
+        String relative = path.startsWith("/") ? path.substring(1) : path;
+        return new URI(uri.getScheme(), null, uri.getHost(), uri.getPort(), prefix + relative, null, null).toURL();
     }
     static void probe(String base, Reply reply) {
         network.execute(() -> {

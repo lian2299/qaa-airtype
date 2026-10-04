@@ -23,6 +23,14 @@ public class TransferTest extends Instrumentation {
         String oldUrl = prefs.getString("url", null), oldDraft = prefs.getString("draft", null);
         Bundle result = new Bundle();
         try {
+            check(ServerClient.endpoint("https://nps.store2299.cn/air-type/", "/last_text").toString().equals(
+                "https://nps.store2299.cn/air-type/last_text"), "probe keeps service path");
+            check(ServerClient.endpoint("https://nps.store2299.cn/air-type", "/input_preview").toString().equals(
+                "https://nps.store2299.cn/air-type/input_preview"), "preview accepts missing trailing slash");
+            check(ServerClient.endpoint("https://nps.store2299.cn/air-type/", "/type").toString().equals(
+                "https://nps.store2299.cn/air-type/type"), "send keeps service path");
+            check(ServerClient.endpoint("http://127.0.0.1:15001/", "/type").toString().equals(
+                "http://127.0.0.1:15001/type"), "LAN root and port remain valid");
             prefs.edit().putString("url", BASE).remove("draft").commit();
             getTargetContext().startActivity(new Intent(getTargetContext(), RemoteActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
             await(() -> RemoteActivity.instance != null && RemoteActivity.instance.resumed, "native editor open");
@@ -53,6 +61,14 @@ public class TransferTest extends Instrumentation {
             });
             SystemClock.sleep(350);
             check(types(events()) == 0 && draft().equals("手动输入不自动发"), "unarmed typing stays in editor");
+
+            mode("ok"); prepare();
+            runOnMainSync(() -> { remote.voiceArmed = true; remote.voiceEnded(); });
+            SystemClock.sleep(200);
+            check(remote.voiceArmed && types(events()) == 0, "empty voice stop waits for recognition without sending");
+            runOnMainSync(() -> remote.editor.onCreateInputConnection(new EditorInfo()).commitText("停止后才到达的识别结果", 1));
+            await(() -> !remote.sending && remote.editor.length() == 0, "late recognition sent");
+            check(types(events()) == 1 && finalText(events()).equals("停止后才到达的识别结果 "), "late final text is sent exactly once");
 
             mode("delayed_type"); prepare(); long beforeDelayedSound = soundAt(); compose("上一条语音");
             await(() -> remote.sending, "send in progress");
@@ -127,6 +143,7 @@ public class TransferTest extends Instrumentation {
             result.putString("stream", "TransferTest: " + checks + " checks passed\n");
             result.putBoolean("passed", true);
         } catch (Throwable error) {
+            android.util.Log.e("AirTypeTests", "Device transfer checks failed after " + checks + " checks", error);
             result.putString("stream", "TransferTest FAILED: " + error + "\n");
             result.putBoolean("passed", false);
         } finally {

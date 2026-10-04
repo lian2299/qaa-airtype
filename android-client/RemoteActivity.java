@@ -9,6 +9,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
 import android.media.AudioAttributes;
+import android.media.AudioManager;
 import android.media.SoundPool;
 import android.os.*;
 import android.text.*;
@@ -34,6 +35,7 @@ public class RemoteActivity extends Activity {
     Runnable sendFinal = () -> {
         if (voiceArmed && !editor.composing && BaseInputConnection.getComposingSpanStart(editor.getText()) < 0) sendDraft();
     };
+    Runnable expireVoice = () -> voiceArmed = false;
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); instance = this; setTurnScreenOn(true);
         loadSentSound();
@@ -176,10 +178,17 @@ public class RemoteActivity extends Activity {
         });
     }
     void compositionFinished() { main.removeCallbacks(sendFinal); main.postDelayed(sendFinal, 80); }
+    void voiceEnded() {
+        // Recognition may commit its first text after the microphone stops.
+        // Leave a bounded window for that final InputConnection callback.
+        main.removeCallbacks(expireVoice);
+        if (voiceArmed) { compositionFinished(); main.postDelayed(expireVoice, 5000); }
+    }
     void sendDraft() {
         String draft = editor.getText().toString().trim();
         if (sending || draft.isEmpty() || editor.composing || BaseInputConnection.getComposingSpanStart(editor.getText()) >= 0) return;
         sending = true; voiceArmed = false; transfer.setText("正在发送到 PC…");
+        main.removeCallbacks(expireVoice);
         ServerClient.send(url(), draft, this::playSentSound, ok -> {
             sending = false;
             if (ok) {
@@ -198,7 +207,7 @@ public class RemoteActivity extends Activity {
     void loadSentSound() {
         try {
             sendSounds = new SoundPool.Builder().setMaxStreams(1).setAudioAttributes(new AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).build();
+                .setLegacyStreamType(AudioManager.STREAM_MUSIC).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build()).build();
             sendSounds.setOnLoadCompleteListener((pool, id, status) -> {
                 if (pool != sendSounds || id != sentSound) return;
                 sentSoundReady = status == 0;
@@ -265,6 +274,7 @@ public class RemoteActivity extends Activity {
     }
     @Override public void onDestroy() {
         if (instance == this) instance = null; main.removeCallbacks(sendFinal);
+        main.removeCallbacks(expireVoice);
         if (sendSounds != null) { sendSounds.release(); sendSounds = null; }
         sentSoundPending = false; super.onDestroy();
     }

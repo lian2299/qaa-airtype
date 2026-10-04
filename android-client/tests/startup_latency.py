@@ -98,7 +98,7 @@ try:
             log = events()
             # The log rotates; match only timestamps after the last old event.
             since = int(before.splitlines()[-1].split()[0]) if before else 0
-            current = '\n'.join(line for line in log.splitlines() if int(line.split()[0]) > since)
+            current = '\n'.join(line for line in log.splitlines() if line and int(line.split()[0]) > since)
             if 'FAILED ' in current:
                 raise RuntimeError(current)
             if 'FINISHED' in current:

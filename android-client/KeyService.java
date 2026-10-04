@@ -26,7 +26,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
     volatile long generation;
     long frameAt, nextFrameAt;
     ToneGenerator tone;
-    long deadline, lastFocusAt, sessionAt;
+    long deadline, lastFocusAt, sessionAt, stopFrameLoggedAt, activityLaunchAt, microphoneStoppedAt;
     boolean tapped, stopClicked;
     volatile boolean gesturePending;
     int oldKeyboardMode;
@@ -61,6 +61,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         status("等待 F9 · 短按免手持，长按松开结束", false); log("CONNECTED");
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(diagnostic, new IntentFilter("local.qaa.airtype.SNAPSHOT"), "android.permission.DUMP", main, Context.RECEIVER_EXPORTED);
         else registerReceiver(diagnostic, new IntentFilter("local.qaa.airtype.SNAPSHOT"), "android.permission.DUMP", main);
+        schedule(0);
     }
     @Override protected boolean onKeyEvent(KeyEvent event) {
         RemoteActivity remote = RemoteActivity.instance;
@@ -85,8 +86,8 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         if (getSystemService(KeyguardManager.class).isKeyguardLocked()) { fail("请先解锁手机，再按 F9"); return; }
         String method = Settings.Secure.getString(getContentResolver(), Settings.Secure.DEFAULT_INPUT_METHOD);
         if (method == null || !method.startsWith(IME + "/")) { fail("请将豆包设为当前输入法"); return; }
-        sessionAt = SystemClock.uptimeMillis(); deadline = sessionAt + 7000;
-        tapped = false; gesturePending = false; stopClicked = false; lastFocusAt = sessionAt;
+        sessionAt = SystemClock.uptimeMillis(); deadline = sessionAt + 7000; activityLaunchAt = sessionAt;
+        tapped = false; gesturePending = false; stopClicked = false; microphoneStoppedAt = 0; lastFocusAt = sessionAt;
         latestFrame = null; frameAt = 0; nextFrameAt = 0;
         getSoftKeyboardController().setShowMode(SHOW_MODE_IGNORE_HARD_KEYBOARD);
         status("启动中 · 等待成功提示后说话", false); log("START");
@@ -100,13 +101,36 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         schedule(0);
     }
     void schedule(long millis) { main.removeCallbacks(tick); main.postDelayed(tick, millis); }
-    void wakeStartup() { if (session.phase == KeySession.Phase.STARTING) schedule(0); }
+    void wakeStartup() { if (session.phase == KeySession.Phase.STARTING || session.phase == KeySession.Phase.IDLE) schedule(0); }
     void advance() {
-        if (session.phase == KeySession.Phase.IDLE) return;
         long now = SystemClock.uptimeMillis(); RemoteActivity remote = RemoteActivity.instance;
+        if (session.phase == KeySession.Phase.IDLE) {
+            if (remote == null || !remote.resumed) return;
+            requestFrame();
+            ImeFrame frame = latestFrame;
+            // Direct taps on Doubao's speech control need the same arming and
+            // feedback as F9. Require both the IME panel and a live microphone.
+            if (frame != null && frame.recording && now - frameAt < 800 && recordingCount() > 0 && !remote.sending) {
+                generation++; session.phase = KeySession.Phase.RECORDING; session.handsFree = true;
+                sessionAt = now; microphoneStoppedAt = 0; tapped = false;
+                remote.main.removeCallbacks(remote.expireVoice); remote.voiceArmed = true; remote.keepAwake(true);
+                log("MANUAL_READY mic=" + recordingCount()); signal(true);
+                status("正在收音 · 点击豆包结束或按 F9 结束", true);
+            }
+            schedule(150); return;
+        }
         if (session.phase == KeySession.Phase.STARTING) {
             if (now > deadline) { fail(tapped ? "豆包未确认进入语音状态，请重试" : "输入法面板未就绪，请重试"); return; }
-            if (remote == null || !remote.resumed) { schedule(80); return; }
+            if (remote == null || !remote.resumed) {
+                // Home transitions can briefly retain focus/resumed state at
+                // key-down. Retry once the old page has actually paused.
+                if (now - activityLaunchAt >= 500) {
+                    activityLaunchAt = now; log("OPEN_REMOTE_RETRY");
+                    try { startActivity(new Intent(this, RemoteActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)); }
+                    catch (RuntimeException error) { fail("无法打开远程输入窗口"); return; }
+                }
+                schedule(80); return;
+            }
             if ((remote.getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) == 0) remote.keepAwake(true);
             if (!remote.error.isEmpty()) { fail(remote.error); return; }
             requestFrame();
@@ -114,7 +138,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
             ImeFrame frame = latestFrame;
             if (!tapped) {
                 if (frame != null && frame.start != null && now - frameAt < 800 && !remote.sending && recordingCount() == 0) {
-                    remote.voiceArmed = true; tapped = true; deadline = now + 2500;
+                    remote.main.removeCallbacks(remote.expireVoice); remote.voiceArmed = true; tapped = true; deadline = now + 2500;
                     log("START_BUTTON latency=" + (now - sessionAt)); click(frame.start);
                 } else if (now - lastFocusAt > 350) {
                     lastFocusAt = now; remote.focusInput();
@@ -134,12 +158,29 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
             schedule(session.phase == KeySession.Phase.STARTING ? 40 : 150);
         } else if (session.phase == KeySession.Phase.RECORDING) {
             ImeFrame frame = latestFrame; requestFrame();
-            if (recordingCount() == 0 && frame != null && frame.start != null && now - frameAt < 800) { finish("语音已结束"); return; }
+            if (recordingCount() == 0) {
+                if (microphoneStoppedAt == 0) microphoneStoppedAt = now;
+                if ((frame != null && frame.start != null && now - frameAt < 800) || now - microphoneStoppedAt >= 250) { finish("语音已结束"); return; }
+            } else microphoneStoppedAt = 0;
             if (remote == null || !remote.resumed) { fail("远程输入窗口已离开，请按 F9 重试"); return; }
             schedule(150);
         } else if (session.phase == KeySession.Phase.STOPPING) {
             ImeFrame frame = latestFrame; requestFrame();
-            if (recordingCount() == 0 && frame != null && frame.start != null && now - frameAt < 800) { finish("语音已结束"); return; }
+            int microphones = recordingCount();
+            if (microphones == 0) {
+                if (microphoneStoppedAt == 0) microphoneStoppedAt = now;
+            } else microphoneStoppedAt = 0;
+            if (now - stopFrameLoggedAt >= 250) {
+                stopFrameLoggedAt = now;
+                log("STOP_FRAME mic=" + microphones + " start=" + (frame != null && frame.start != null)
+                    + " recording=" + (frame != null && frame.recording) + " age=" + (now - frameAt));
+            }
+            if (microphones == 0 && frame != null && frame.start != null && now - frameAt < 800) { finish("语音已结束"); return; }
+            // The IME may keep its recognition panel visible after releasing
+            // the microphone. Final text still arrives through InputConnection.
+            if (microphoneStoppedAt != 0 && now - microphoneStoppedAt >= 250) {
+                log("STOP_MIC_CONFIRMED"); finish("语音已结束"); return;
+            }
             if (now > deadline) { fail("结束语音未确认，请检查手机"); return; }
             if (!stopClicked && frame != null && !frame.stopBounds.isEmpty() && now - frameAt < 800) {
                 // A real touch avoids the synchronous ACTION_CLICK/InputConnection
@@ -154,7 +195,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         }
     }
     void stopRecording() {
-        session.phase = KeySession.Phase.STOPPING; stopClicked = false; deadline = SystemClock.uptimeMillis() + 2500;
+        session.phase = KeySession.Phase.STOPPING; stopClicked = false; microphoneStoppedAt = 0; deadline = SystemClock.uptimeMillis() + 2500;
         status("正在结束语音…", false); log("STOP_REQUEST"); schedule(0);
     }
     void finish(String message) {
@@ -162,9 +203,10 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         main.removeCallbacks(tick); session.reset(SystemClock.uptimeMillis());
         if (RemoteActivity.instance != null) {
             RemoteActivity.instance.keepAwake(false);
-            if (RemoteActivity.instance.editor.length() == 0 && !RemoteActivity.instance.editor.composing) RemoteActivity.instance.voiceArmed = false;
+            RemoteActivity.instance.voiceEnded();
         }
         status(message, false); log("FINISHED");
+        schedule(150);
     }
     void fail(String message) {
         generation++;
@@ -173,6 +215,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         session.reset(SystemClock.uptimeMillis());
         if (RemoteActivity.instance != null) { RemoteActivity.instance.voiceArmed = false; RemoteActivity.instance.keepAwake(false); }
         status(message, false); signal(false); log("FAILED " + message); Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+        schedule(150);
     }
     void transferFailed() { signal(false); log("TRANSFER_UNCONFIRMED"); }
     void signal(boolean ok) {
@@ -319,7 +362,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         } catch (IOException ignored) {}
     }
     @Override public void onAccessibilityEvent(AccessibilityEvent event) {
-        if (session.phase != KeySession.Phase.IDLE && !main.hasCallbacks(tick)) schedule(0);
+        if (!main.hasCallbacks(tick) && (session.phase != KeySession.Phase.IDLE || (RemoteActivity.instance != null && RemoteActivity.instance.resumed))) schedule(0);
     }
     @Override public void onInterrupt() { if (session.phase != KeySession.Phase.IDLE) fail("无障碍服务中断"); }
     @Override public void onInputDeviceAdded(int id) {}
