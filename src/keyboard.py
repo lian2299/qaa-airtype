@@ -4,10 +4,10 @@ import pyautogui
 
 try:
     from .utils import IS_WINDOWS, VK_SHIFT, VK_INSERT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC
-    from .clipboard import clipboard_get, clipboard_set
+    from .clipboard import capture_clipboard_snapshot, clipboard_set, restore_clipboard_snapshot
 except ImportError:
     from utils import IS_WINDOWS, VK_SHIFT, VK_INSERT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP, KEYEVENTF_SCANCODE, MAPVK_VK_TO_VSC
-    from clipboard import clipboard_get, clipboard_set
+    from clipboard import capture_clipboard_snapshot, clipboard_set, restore_clipboard_snapshot
 
 if IS_WINDOWS:
     import ctypes
@@ -344,9 +344,9 @@ def paste_text(text, use_ctrl_v=False, preserve_clipboard=False):
     original_clipboard = None
     if preserve_clipboard:
         try:
-            original_clipboard = clipboard_get()
+            original_clipboard = capture_clipboard_snapshot()
             clipboard_saved = True
-            print(f"[Clipboard] Saved original content (length: {len(original_clipboard) if original_clipboard else 0})")
+            print("[Clipboard] Saved original content")
         except Exception as e:
             print(f"[Clipboard] Failed to save: {e}")
     
@@ -360,11 +360,7 @@ def paste_text(text, use_ctrl_v=False, preserve_clipboard=False):
     if preserve_clipboard and clipboard_saved:
         time.sleep(0.15)  # Increase wait time to 150ms to ensure paste completes
         try:
-            if original_clipboard is not None:
-                clipboard_set(original_clipboard)
-            else:
-                # If original content is None, clear clipboard
-                clipboard_set('')
+            restore_clipboard_snapshot(original_clipboard)
             print(f"[Clipboard] Restored original content")
         except Exception as e:
             print(f"[Clipboard] Failed to restore: {e}")

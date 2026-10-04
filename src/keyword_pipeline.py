@@ -5,7 +5,10 @@ import pyautogui
 
 try:
     from .config import load_config
-    from .clipboard import clipboard_get, clipboard_set
+    from .clipboard import (
+        capture_clipboard_snapshot,
+        restore_clipboard_snapshot,
+    )
     from .utils import IS_WINDOWS
     from .keyboard import (
         HOTKEY_KEY_WHITELIST,
@@ -20,7 +23,10 @@ try:
     )
 except ImportError:
     from config import load_config
-    from clipboard import clipboard_get, clipboard_set
+    from clipboard import (
+        capture_clipboard_snapshot,
+        restore_clipboard_snapshot,
+    )
     from utils import IS_WINDOWS
     from keyboard import (
         HOTKEY_KEY_WHITELIST,
@@ -38,6 +44,7 @@ except ImportError:
 _ACTION_NAMES = frozenset({'paste', 'shift_enter', 'enter', 'backspace', 'undo'})
 
 _SEGMENT_DELAY_S = 0.03
+_SNAPSHOT_PASTE_SETTLE_S = 0.15
 
 
 def _is_strippable_punct_char(ch):
@@ -186,16 +193,6 @@ def parse_segments(text, rules):
     return segments
 
 
-def _restore_clipboard(content):
-    try:
-        if content is None:
-            clipboard_set('')
-        else:
-            clipboard_set(content)
-    except Exception as e:
-        print(f"[keyword_pipeline] clipboard restore failed: {e}")
-
-
 def _dispatch_action_alias(action, use_ctrl_v):
     a = (action or '').lower()
     if a == 'paste':
@@ -235,7 +232,41 @@ def segments_contain_keyword(segments):
     return any(s.get('type') == 'keyword' for s in segments)
 
 
-def execute_typed_text(text, use_ctrl_v=None, preserve_clipboard=None):
+def is_paste_rule(rule):
+    """Return whether a keyword rule invokes a plain paste shortcut."""
+    if (rule.get('action') or '').lower() == 'paste':
+        return True
+    keys = [str(k).strip().lower() for k in (rule.get('keys') or [])]
+    return keys in (['ctrl', 'v'], ['shift', 'insert'])
+
+
+def get_paste_keywords(rules):
+    """Return configured keywords whose action is a paste shortcut."""
+    return [
+        rule.get('keyword')
+        for rule in (rules or [])
+        if rule.get('keyword') and is_paste_rule(rule)
+    ]
+
+
+def get_paste_occurrences(text, rules):
+    """Return ordered signatures for paste keywords found in ``text``."""
+    return [
+        segment['rule'].get('keyword') or ''
+        for segment in parse_segments(text or '', rules)
+        if segment.get('type') == 'keyword' and is_paste_rule(segment.get('rule') or {})
+    ]
+
+
+def _restore_snapshot(snapshot):
+    try:
+        return bool(restore_clipboard_snapshot(snapshot))
+    except Exception as e:
+        print(f"[keyword_pipeline] clipboard snapshot restore failed: {e}")
+        return False
+
+
+def execute_typed_text(text, use_ctrl_v=None, preserve_clipboard=None, clipboard_snapshots=None):
     """
     Paste full text with optional keyword expansions.
     Returns True on success.
@@ -256,7 +287,12 @@ def execute_typed_text(text, use_ctrl_v=None, preserve_clipboard=None):
         paste_text(text, use_ctrl_v=use_ctrl_v, preserve_clipboard=preserve_clipboard)
         return True
 
-    staged = clipboard_get()
+    try:
+        staged = capture_clipboard_snapshot()
+    except Exception as e:
+        print(f"[keyword_pipeline] clipboard snapshot failed: {e}")
+        staged = None
+    paste_snapshots = iter(clipboard_snapshots or [])
 
     try:
         for seg in segments:
@@ -264,20 +300,30 @@ def execute_typed_text(text, use_ctrl_v=None, preserve_clipboard=None):
                 frag = seg.get('text') or ''
                 if frag:
                     paste_literal_fragment(frag, use_ctrl_v=use_ctrl_v)
-                    _restore_clipboard(staged)
+                    _restore_snapshot(staged)
                     time.sleep(_SEGMENT_DELAY_S)
             else:
-                ok = _dispatch_rule(seg['rule'], use_ctrl_v)
+                rule = seg['rule']
+                restored_captured_snapshot = False
+                if is_paste_rule(rule):
+                    snapshot = next(paste_snapshots, None)
+                    if snapshot is not None:
+                        if not _restore_snapshot(snapshot):
+                            _restore_snapshot(staged)
+                            return False
+                        time.sleep(0.08)
+                        restored_captured_snapshot = True
+                ok = _dispatch_rule(rule, use_ctrl_v)
                 if not ok:
-                    _restore_clipboard(staged)
+                    _restore_snapshot(staged)
                     return False
-                time.sleep(_SEGMENT_DELAY_S)
+                time.sleep(_SNAPSHOT_PASTE_SETTLE_S if restored_captured_snapshot else _SEGMENT_DELAY_S)
 
         if preserve_clipboard:
             time.sleep(0.12)
-            _restore_clipboard(staged)
+            _restore_snapshot(staged)
         return True
     except Exception as e:
         print(f"execute_typed_text error: {e}")
-        _restore_clipboard(staged)
+        _restore_snapshot(staged)
         return False

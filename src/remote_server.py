@@ -1,17 +1,60 @@
 import os
 import sys
+import faulthandler
 
-# Compatible with pythonw / no-console: prevent Flask-Werkzeug from crashing when writing server banner
-if sys.stdout is None:
-    sys.stdout = open(os.devnull, 'w')
-if sys.stderr is None:
-    sys.stderr = open(os.devnull, 'w')
+# Keep diagnostics under AppData even when pythonw inherits a console stream.
+# The global reference also keeps faulthandler's output stream alive.
+class _RuntimeTee:
+    def __init__(self, primary, log_stream):
+        self.primary = primary
+        self.log_stream = log_stream
+        self.encoding = getattr(primary, 'encoding', 'utf-8') if primary else 'utf-8'
+
+    def write(self, value):
+        if self.primary:
+            try:
+                self.primary.write(value)
+            except (OSError, UnicodeError):
+                pass
+        self.log_stream.write(value)
+        return len(value)
+
+    def flush(self):
+        if self.primary:
+            try:
+                self.primary.flush()
+            except OSError:
+                pass
+        self.log_stream.flush()
+
+    def isatty(self):
+        return bool(self.primary and self.primary.isatty())
+
+    def fileno(self):
+        return self.primary.fileno() if self.primary else self.log_stream.fileno()
+
+
+try:
+    _runtime_log_dir = os.path.join(os.environ.get('APPDATA', ''), 'QAA-AirType')
+    os.makedirs(_runtime_log_dir, exist_ok=True)
+    _runtime_log_path = os.path.join(_runtime_log_dir, 'runtime.log')
+    _runtime_log_stream = open(_runtime_log_path, 'a', encoding='utf-8', buffering=1)
+except Exception:
+    _runtime_log_stream = open(os.devnull, 'w')
+
+sys.stdout = _RuntimeTee(sys.stdout, _runtime_log_stream)
+sys.stderr = _RuntimeTee(sys.stderr, _runtime_log_stream)
+try:
+    faulthandler.enable(file=_runtime_log_stream, all_threads=True)
+except Exception:
+    pass
 
 import socket
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 from flask import Flask, request, render_template_string
+from werkzeug.serving import make_server
 import pyautogui
 import pyperclip
 import platform
@@ -39,9 +82,9 @@ except ImportError:
     import state
 
 try:
-    from .keyword_pipeline import execute_typed_text
+    from .keyword_pipeline import execute_typed_text, get_paste_keywords, get_paste_occurrences, validate_keyword_actions
 except ImportError:
-    from keyword_pipeline import execute_typed_text
+    from keyword_pipeline import execute_typed_text, get_paste_keywords, get_paste_occurrences, validate_keyword_actions
 
 # 尝试导入 clipman（避免触发剪贴板历史工具如 Ditto）
 try:
@@ -424,6 +467,9 @@ HTML_TEMPLATE = """
         let isComposing = false;
         let previewSyncTimer = null;
         let lastPreviewText = null;
+        let lastPasteKeywordCount = 0;
+        let previewSyncChain = Promise.resolve();
+        const pasteKeywords = {{ paste_keywords | tojson }};
 
         // 配置项
         const config = {
@@ -636,6 +682,7 @@ HTML_TEMPLATE = """
                 return;
             }
             lastPreviewText = text;
+            lastPasteKeywordCount = countPasteKeywords(text);
 
             const payload = JSON.stringify({ text: text });
             if (options.beacon && navigator.sendBeacon) {
@@ -644,15 +691,44 @@ HTML_TEMPLATE = """
                 return;
             }
 
-            fetch('/input_preview', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: payload,
-                keepalive: !!options.keepalive
-            }).catch(err => console.error('Failed to sync input preview:', err));
+            // Serialize preview requests so two clipboard placeholders can never
+            // reach the server out of order.
+            previewSyncChain = previewSyncChain
+                .catch(() => {})
+                .then(() => fetch('/input_preview', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: payload,
+                    keepalive: !!options.keepalive
+                }))
+                .catch(err => console.error('Failed to sync input preview:', err));
+        }
+
+        function countPasteKeywords(text) {
+            let count = 0;
+            pasteKeywords.forEach(function(keyword) {
+                if (!keyword) return;
+                let start = 0;
+                while (start <= text.length - keyword.length) {
+                    const found = text.indexOf(keyword, start);
+                    if (found < 0) break;
+                    count += 1;
+                    start = found + keyword.length;
+                }
+            });
+            return count;
         }
 
         function scheduleInputPreviewSync() {
+            const currentCount = countPasteKeywords(inputElement ? (inputElement.value || '') : '');
+            if (currentCount > lastPasteKeywordCount) {
+                if (previewSyncTimer) {
+                    clearTimeout(previewSyncTimer);
+                    previewSyncTimer = null;
+                }
+                syncInputPreview({ force: true });
+                return;
+            }
             if (previewSyncTimer) {
                 clearTimeout(previewSyncTimer);
             }
@@ -1021,12 +1097,17 @@ HTML_TEMPLATE = """
             isSending = true;
             status.innerText = "发送中...";
             status.style.color = "#888";
-            
-            fetch('/type', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text: text })
-            })
+
+            // Make the final preview (and its clipboard captures) finish before
+            // the text request starts executing paste actions.
+            syncInputPreview({ force: true });
+            previewSyncChain
+            .catch(() => {})
+            .then(() => fetch('/type', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: text })
+                }))
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
@@ -1686,23 +1767,31 @@ def get_last_text():
 
 @app.route('/input_preview', methods=['POST'])
 def update_input_preview():
-    """更新前端输入预览；仅用于桌面状态提示，不触发发送。"""
+    """更新输入预览，并为新出现的粘贴热词捕获当时的剪贴板。"""
     try:
         data = request.get_json(silent=True) or {}
-        text = state.set_input_preview(data.get('text', ''))
+        raw_text = data.get('text', '')
+        if not isinstance(raw_text, str):
+            raw_text = '' if raw_text is None else str(raw_text)
+        text = state.set_input_preview(raw_text)
+        rules = validate_keyword_actions(load_config().get('keyword_actions', []))
+        occurrences = get_paste_occurrences(raw_text, rules)
+        state.sync_paste_occurrences(occurrences)
 
         handler = input_preview_update_handler
         if handler:
             handler(text)
 
-        return {'success': True, 'length': len(text)}
+        return {'success': True, 'length': len(raw_text)}
     except Exception as e:
         print(f"Error in update_input_preview: {e}")
         return {'success': False}
 
 @app.route('/')
 def index():
-    return render_template_string(HTML_TEMPLATE)
+    rules = validate_keyword_actions(load_config().get('keyword_actions', []))
+    paste_keywords = get_paste_keywords(rules)
+    return render_template_string(HTML_TEMPLATE, paste_keywords=paste_keywords)
 
 @app.route('/mute', methods=['POST'])
 def toggle_mute():
@@ -1861,9 +1950,21 @@ def type_text():
             global use_ctrl_v, preserve_clipboard
 
             state.last_sent_text = text
+            rules = validate_keyword_actions(load_config().get('keyword_actions', []))
+            occurrences = get_paste_occurrences(text, rules)
+            snapshots = state.get_paste_snapshots(occurrences, capture_missing=True)
 
-            ok = execute_typed_text(text, use_ctrl_v, preserve_clipboard)
+            ok = execute_typed_text(
+                text,
+                use_ctrl_v,
+                preserve_clipboard,
+                clipboard_snapshots=snapshots,
+            )
             if ok:
+                state.clear_input_preview()
+                handler = input_preview_update_handler
+                if handler:
+                    handler('')
                 return {'success': True}
             return {'success': False, 'error': 'Paste failed'}
     except Exception as e:
@@ -1961,9 +2062,9 @@ class ServerApp:
         self.root = root
         self.root.title("QAA AirType")
         # 增加高度以容纳配置选项和二维码
-        self.root.geometry("512x720")
+        self.root.geometry("512x760")
         self.root.resizable(True, True)
-        self.root.minsize(380, 560)  # 最小尺寸
+        self.root.minsize(380, 600)  # 最小尺寸
 
         # 关闭窗口时最小化到托盘，不退出（从托盘菜单可退出）
         self.root.protocol('WM_DELETE_WINDOW', self.hide_window)
@@ -1978,20 +2079,22 @@ class ServerApp:
 
         # 系统托盘图标
         self.tray_icon = None
-        self.create_tray_icon()
 
         # 居中屏幕
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
         x = (screen_width - 512) // 2
-        y = (screen_height - 720) // 2
-        self.root.geometry(f"512x720+{x}+{y}")
+        y = (screen_height - 760) // 2
+        self.root.geometry(f"512x760+{x}+{y}")
 
         self.all_ips = get_all_ips()
         self.ip_var = tk.StringVar(value=self.all_ips[0])
         self.is_running = False
         self.cf_client = None  # CF 模式客户端
         self.cf_mode = False   # 是否为 CF 模式
+        self.lan_server = None
+        self.lan_server_thread = None
+        self.active_port = None
         self.input_preview_window = None
         self.input_preview_text_label = None
 
@@ -2025,6 +2128,19 @@ class ServerApp:
                                      values=self.all_ips, font=("Arial", 10), state='readonly')
         self.ip_combo.pack(fill='x', pady=(0, 10))
         self.ip_combo.bind('<<ComboboxSelected>>', self.on_mode_changed)
+
+        # 服务状态始终显示在窗体上方，避免只能从按钮文案猜测当前状态。
+        service_status_frame = tk.Frame(main_frame, bg="#f3f4f6", padx=10, pady=7)
+        service_status_frame.pack(fill='x', pady=(0, 10))
+        self.service_status_label = tk.Label(
+            service_status_frame,
+            text="● 服务状态：已停止",
+            bg="#f3f4f6",
+            fg="#6b7280",
+            font=("Microsoft YaHei UI", 10, "bold"),
+            anchor="w",
+        )
+        self.service_status_label.pack(fill='x')
 
         # --- 局域网模式控件 ---
         self.lan_frame = tk.Frame(main_frame)
@@ -2196,6 +2312,9 @@ class ServerApp:
         self.refresh_last_text()
         self.root.after(2000, self.auto_refresh_last_text)
 
+        # 所有服务状态和界面控件初始化完成后再创建托盘，避免托盘线程过早触发回调。
+        self.create_tray_icon()
+
     def show_all_ips_display(self, port, started=False):
         """显示所有可用 IP 地址列表"""
         # 过滤掉 0.0.0.0 和 Cloudflare 选项
@@ -2236,7 +2355,7 @@ class ServerApp:
         win.configure(bg="#111827")
         win.attributes("-topmost", True)
         try:
-            win.attributes("-alpha", 0.94)
+            win.attributes("-alpha", 0.78)
         except tk.TclError:
             pass
         try:
@@ -2291,6 +2410,7 @@ class ServerApp:
             GWL_EXSTYLE = -20
             WS_EX_TOPMOST = 0x00000008
             WS_EX_TOOLWINDOW = 0x00000080
+            WS_EX_TRANSPARENT = 0x00000020
             WS_EX_NOACTIVATE = 0x08000000
             HWND_TOPMOST = -1
             SWP_NOSIZE = 0x0001
@@ -2301,7 +2421,7 @@ class ServerApp:
             user32.SetWindowLongW(
                 hwnd,
                 GWL_EXSTYLE,
-                style | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                style | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
             )
             user32.SetWindowPos(
                 hwnd,
@@ -2369,8 +2489,12 @@ class ServerApp:
         self._apply_input_preview_window_styles()
         self.input_preview_window.lift()
 
+    def _set_service_status(self, text, color="#6b7280"):
+        """Update the persistent service status indicator."""
+        self.service_status_label.config(text=f"● 服务状态：{text}", fg=color)
+
     def run_flask(self, host, port):
-        """Run Flask; on Windows port binding errors, try fallback ports 5001, 8080."""
+        """Run a stoppable WSGI server, with fallback ports 5001 and 8080."""
         wanted = int(port)
         seen = set()
         fallback_ports = []
@@ -2380,28 +2504,53 @@ class ServerApp:
                 fallback_ports.append(p)
         last_error = None
         for p in fallback_ports:
+            server = None
             try:
-                if p != int(port):
-                    self.root.after(0, lambda pp=p: self._on_port_fallback(pp))
-                app.run(host=host, port=p, debug=False, use_reloader=False)
-                return
-            except OSError as e:
-                last_error = e
-                err_str = str(e).lower()
-                is_bind_error = (
-                    '10013' in err_str or 'access' in err_str or 'permission' in err_str
-                    or 'denied' in err_str or 'wsaeacces' in err_str
-                    or '以一种访问权限不允许' in str(e) or '套接字' in str(e)
-                )
-                if is_bind_error and p != fallback_ports[-1]:
-                    continue
-                if is_bind_error:
-                    self.root.after(0, self._on_port_bind_failed)
+                server = make_server(host, p, app, threaded=True)
+                if not self.is_running:
+                    server.server_close()
                     return
-                raise
+                self.lan_server = server
+                self.active_port = p
+                self.root.after(0, lambda pp=p: self._on_lan_started(pp))
+                try:
+                    server.serve_forever()
+                finally:
+                    try:
+                        server.server_close()
+                    except Exception:
+                        pass
+                    if self.lan_server is server:
+                        self.lan_server = None
+                    if self.is_running:
+                        self.root.after(0, self._on_lan_server_stopped)
+                return
+            except (OSError, SystemExit) as e:
+                last_error = e
+                if p != fallback_ports[-1]:
+                    continue
+                self.root.after(0, self._on_port_bind_failed)
+                return
+            except Exception as e:
+                last_error = e
+                self.root.after(0, self._on_port_bind_failed)
+                return
+            finally:
+                if server is not None and self.lan_server is server and not self.is_running:
+                    self.lan_server = None
         if last_error:
             self.root.after(0, self._on_port_bind_failed)
             print(f"Error: {last_error}")
+
+    def _on_lan_started(self, port):
+        """Finish LAN startup after the socket has actually been bound."""
+        if not self.is_running:
+            return
+        if port != int(self.port_var.get()):
+            self._on_port_fallback(port)
+        self.btn_start.config(text="停止服务", state='normal', bg="#ff3b30")
+        self._set_service_status(f"运行中（局域网，端口 {port}）", "#16a34a")
+        self._refresh_tray_menu()
 
     def _on_port_fallback(self, port):
         """Notify user that a fallback port is used (called from main thread)."""
@@ -2409,19 +2558,42 @@ class ServerApp:
         self.config['port'] = str(port)
         save_config(self.config)
         self.tip_label.config(text="原端口不可用，已改用端口 %s" % port, fg="#888")
+        if getattr(self, 'listen_on_all', False):
+            self.show_all_ips_display(port, started=True)
+        else:
+            self._update_lan_qr()
 
     def _on_port_bind_failed(self):
         """Show error when all port attempts failed (called from main thread)."""
+        if not self.is_running:
+            return
         self.is_running = False
+        self.lan_server = None
+        self.active_port = None
         self.btn_start.config(text="启动服务", state="normal", bg="#007AFF")
         self.port_entry.config(state="normal", bg="white")
         self.ip_combo.config(state="readonly")
         self.tip_label.config(text="", fg="#888")
+        self._set_service_status("启动失败", "#dc2626")
+        self._refresh_tray_menu()
         messagebox.showerror(
             "端口无法绑定",
             "无法绑定所选端口（可能被系统保留或占用）。\n\n"
             "请将端口改为 5001 或 8080 后重新启动服务。"
         )
+
+    def _on_lan_server_stopped(self):
+        """Reflect an unexpected server exit instead of showing a stale running state."""
+        if not self.is_running:
+            return
+        self.is_running = False
+        self.active_port = None
+        self.btn_start.config(text="启动服务", state="normal", bg="#007AFF")
+        self.port_entry.config(state="normal", bg="white")
+        self.ip_combo.config(state="readonly")
+        self._set_service_status("异常停止", "#dc2626")
+        self.tip_label.config(text="服务意外停止，请重新启动", fg="#dc2626")
+        self._refresh_tray_menu()
 
     def generate_qr(self, url, target_size=200):
         """生成二维码图像，自动调整大小以适应目标尺寸"""
@@ -2529,8 +2701,7 @@ class ServerApp:
 
     def toggle_server(self):
         if self.is_running:
-            # 停止服务并退出
-            self.quit_app()
+            self.stop_server()
             return
 
         selected = self.ip_var.get()
@@ -2591,7 +2762,9 @@ class ServerApp:
         self.cf_client.start()
 
         self.is_running = True
-        self.btn_start.config(text="停止服务并退出", bg="#ff3b30")
+        self.btn_start.config(text="停止服务", bg="#ff3b30")
+        self._set_service_status("运行中（Cloudflare，连接中）", "#d97706")
+        self._refresh_tray_menu()
         self.cf_url_entry.config(state='disabled', bg="#f0f0f0")
         self.cf_key_entry.config(state='disabled', bg="#f0f0f0")
         self.ip_combo.config(state='disabled')
@@ -2627,17 +2800,23 @@ class ServerApp:
         else:
             listen_host = host_ip
 
-        # 启动 Flask 线程
-        t = threading.Thread(target=self.run_flask, args=(listen_host, port), daemon=True)
-        t.start()
-
         self.is_running = True
         self.listen_on_all = host_ip.startswith('0.0.0.0')
-        self.btn_start.config(text="停止服务并退出", state='normal', bg="#ff3b30")
+        self.btn_start.config(text="正在启动…", state='disabled', bg="#f59e0b")
+        self._set_service_status("正在启动…", "#d97706")
+        self._refresh_tray_menu()
         self.port_entry.config(state='disabled', bg="#f0f0f0")
 
         if not self.listen_on_all:
             self.ip_combo.config(state='disabled')
+
+        # 启动可停止的 WSGI 服务线程。只有端口真实绑定后才显示“运行中”。
+        self.lan_server_thread = threading.Thread(
+            target=self.run_flask,
+            args=(listen_host, port),
+            daemon=True,
+        )
+        self.lan_server_thread.start()
 
         if host_ip.startswith('0.0.0.0'):
             self.show_all_ips_display(port, started=True)
@@ -2678,6 +2857,8 @@ class ServerApp:
 
     def _update_cf_status(self, state: str, text: str):
         """更新 CF 状态显示"""
+        if not self.is_running:
+            return
         colors = {
             'connected': '#34c759',
             'connecting': '#f59e0b',
@@ -2685,6 +2866,62 @@ class ServerApp:
             'error': '#ff3b30'
         }
         self.tip_label.config(text=text, fg=colors.get(state, '#888'))
+        service_text = {
+            'connected': '运行中（Cloudflare，已连接）',
+            'connecting': '运行中（Cloudflare，连接中）',
+            'disconnected': '运行中（Cloudflare，重连中）',
+            'error': '运行中（Cloudflare，连接异常）',
+        }.get(state, '运行中（Cloudflare）')
+        self._set_service_status(service_text, colors.get(state, '#6b7280'))
+
+    def stop_server(self, update_ui=True):
+        """Stop the active LAN/CF service without exiting the desktop app."""
+        if update_ui:
+            self.btn_start.config(text="正在停止…", state='disabled', bg="#f59e0b")
+            self._set_service_status("正在停止…", "#d97706")
+
+        self.is_running = False
+
+        if self.cf_client:
+            self.cf_client.stop()
+            self.cf_client = None
+
+        server = self.lan_server
+        self.lan_server = None
+        if server:
+            try:
+                server.shutdown()
+            except Exception as e:
+                print(f"Stop LAN server failed: {e}")
+            try:
+                server.server_close()
+            except Exception:
+                pass
+
+        self.active_port = None
+        state.clear_input_preview()
+        try:
+            if self.input_preview_window and self.input_preview_window.winfo_exists():
+                self.input_preview_window.withdraw()
+        except tk.TclError:
+            pass
+
+        if not update_ui:
+            return
+
+        self.btn_start.config(text="启动服务", state='normal', bg="#007AFF")
+        self.ip_combo.config(state='readonly')
+        selected = self.ip_var.get()
+        if selected == 'Cloudflare Chat Workers':
+            self.cf_url_entry.config(state='normal', bg='white')
+            self.cf_key_entry.config(state='normal', bg='white')
+        else:
+            self.port_entry.config(state='normal', bg='white')
+            self.show_all_ips_display(int(self.port_var.get()), started=False)
+        self.url_label.config(text='')
+        self.tip_label.config(text="服务已停止，可修改配置后重新启动", fg="#6b7280")
+        self._set_service_status("已停止", "#6b7280")
+        self._refresh_tray_menu()
 
     def on_mode_changed(self, event=None):
         """模式/IP 改变时切换界面"""
@@ -2747,6 +2984,11 @@ class ServerApp:
         # 创建托盘菜单（default=True 使左键单击触发「显示窗口」，Windows 上有效）
         menu = pystray.Menu(
             item('显示窗口', self._tray_show_window, default=True),
+            pystray.Menu.SEPARATOR,
+            item('启动服务', self._tray_start_service, enabled=self._tray_can_start_service),
+            item('停止服务', self._tray_stop_service, enabled=self._tray_can_stop_service),
+            item('重启服务', self._tray_restart_service, enabled=self._tray_can_restart_service),
+            pystray.Menu.SEPARATOR,
             item('复制最近消息', self._tray_copy_last_text),
             item('退出', self.quit_app)
         )
@@ -2779,6 +3021,59 @@ class ServerApp:
         """托盘回调：调度到主线程执行复制（pystray 在后台线程调用）"""
         self.root.after(0, self._do_copy_last_text_from_tray)
 
+    def _tray_can_start_service(self, item=None):
+        """服务停止时才允许从托盘启动。"""
+        return not getattr(self, 'is_running', False)
+
+    def _tray_can_stop_service(self, item=None):
+        """服务运行或启动过程中允许从托盘停止。"""
+        return bool(getattr(self, 'is_running', False))
+
+    def _tray_can_restart_service(self, item=None):
+        """仅在服务已经真正可用时允许重启，避免绑定端口期间发生竞态。"""
+        if not getattr(self, 'is_running', False):
+            return False
+        if getattr(self, 'cf_mode', False):
+            return True
+        return getattr(self, 'lan_server', None) is not None
+
+    def _refresh_tray_menu(self):
+        """刷新托盘菜单项的动态启用状态。"""
+        tray_icon = getattr(self, 'tray_icon', None)
+        if not tray_icon:
+            return
+        try:
+            tray_icon.update_menu()
+        except Exception as e:
+            print(f"Refresh tray menu failed: {e}")
+
+    def _tray_start_service(self, icon=None, item=None):
+        """托盘回调：调度到 Tk 主线程启动服务。"""
+        self.root.after(0, self._do_start_service_from_tray)
+
+    def _do_start_service_from_tray(self):
+        if self._tray_can_start_service():
+            self.toggle_server()
+
+    def _tray_stop_service(self, icon=None, item=None):
+        """托盘回调：调度到 Tk 主线程停止服务。"""
+        self.root.after(0, self._do_stop_service_from_tray)
+
+    def _do_stop_service_from_tray(self):
+        if self._tray_can_stop_service():
+            self.stop_server()
+
+    def _tray_restart_service(self, icon=None, item=None):
+        """托盘回调：调度到 Tk 主线程重启服务。"""
+        self.root.after(0, self._do_restart_service_from_tray)
+
+    def _do_restart_service_from_tray(self):
+        if not self._tray_can_restart_service():
+            return
+        self.stop_server()
+        # stop_server 会同步关闭监听端口；下一轮事件循环再按当前配置启动。
+        self.root.after(0, self._do_start_service_from_tray)
+
     def _do_copy_last_text_from_tray(self):
         """在主线程复制最近消息到剪贴板"""
         text = self.get_last_sent_text()
@@ -2789,17 +3084,14 @@ class ServerApp:
         """退出应用"""
         global input_preview_update_handler
         input_preview_update_handler = None
-        state.set_input_preview('')
+        self.stop_server(update_ui=False)
+        state.clear_input_preview()
         try:
             if self.input_preview_window and self.input_preview_window.winfo_exists():
                 self.input_preview_window.destroy()
         except tk.TclError:
             pass
 
-        # 停止 CF 客户端
-        if self.cf_client:
-            self.cf_client.stop()
-            self.cf_client = None
         if self.tray_icon:
             self.tray_icon.stop()
         self.root.quit()

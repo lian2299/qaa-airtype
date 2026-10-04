@@ -6,7 +6,8 @@ from .audio import set_system_mute_windows
 from .keyboard import (
     send_ctrl_z_windows, send_enter_windows, send_shift_enter_windows, send_backspace_windows
 )
-from .keyword_pipeline import execute_typed_text
+from .config import load_config
+from .keyword_pipeline import execute_typed_text, get_paste_keywords, get_paste_occurrences, validate_keyword_actions
 from . import state
 
 # Import audio state variables
@@ -18,15 +19,22 @@ def register_routes(app, html_template):
     
     @app.route('/')
     def index():
-        return render_template_string(html_template)
+        rules = validate_keyword_actions(load_config().get('keyword_actions', []))
+        paste_keywords = get_paste_keywords(rules)
+        return render_template_string(html_template, paste_keywords=paste_keywords)
 
     @app.route('/input_preview', methods=['POST'])
     def update_input_preview():
         """Update frontend input preview state without sending text."""
         try:
             data = request.get_json(silent=True) or {}
-            text = state.set_input_preview(data.get('text', ''))
-            return {'success': True, 'length': len(text)}
+            raw_text = data.get('text', '')
+            if not isinstance(raw_text, str):
+                raw_text = '' if raw_text is None else str(raw_text)
+            text = state.set_input_preview(raw_text)
+            rules = validate_keyword_actions(load_config().get('keyword_actions', []))
+            state.sync_paste_occurrences(get_paste_occurrences(raw_text, rules))
+            return {'success': True, 'length': len(raw_text)}
         except Exception as e:
             print(f"Error in update_input_preview: {e}")
             return {'success': False}
@@ -150,8 +158,12 @@ def register_routes(app, html_template):
             text = data.get('text', '')
             if text:
                 state.last_sent_text = text
-                ok = execute_typed_text(text)
+                rules = validate_keyword_actions(load_config().get('keyword_actions', []))
+                occurrences = get_paste_occurrences(text, rules)
+                snapshots = state.get_paste_snapshots(occurrences, capture_missing=True)
+                ok = execute_typed_text(text, clipboard_snapshots=snapshots)
                 if ok:
+                    state.clear_input_preview()
                     return {'success': True}
                 return {'success': False, 'error': 'Paste failed'}
         except Exception as e:

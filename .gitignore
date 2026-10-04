@@ -56,3 +56,6 @@ build/
 # Local configuration
 .env
 config.local.py
+
+# Local Android APKs, signing keys and device diagnostics
+.local-build/

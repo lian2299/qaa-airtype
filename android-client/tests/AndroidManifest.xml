@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="local.qaa.airtype.tests">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="35" />
+    <application android:label="AirType 设备检查" android:debuggable="true" />
+    <instrumentation android:name="local.qaa.airtype.TransferTest" android:targetPackage="local.qaa.airtype" />
+</manifest>
