@@ -18,6 +18,7 @@ last_sent_text = ''
 # Current frontend input contents used only for the desktop input indicator.
 input_preview_text = ''
 input_preview_updated_at = 0.0
+input_recording = False
 _input_preview_lock = threading.Lock()
 MAX_INPUT_PREVIEW_CHARS = 2000
 _paste_occurrences = []
@@ -46,6 +47,18 @@ def get_input_preview():
     """Return the current frontend input preview text and update timestamp."""
     with _input_preview_lock:
         return input_preview_text, input_preview_updated_at
+
+
+def set_input_recording(recording):
+    """Track phone recording independently of recognized text."""
+    global input_recording
+    with _input_preview_lock:
+        input_recording = recording
+
+
+def get_input_recording():
+    with _input_preview_lock:
+        return input_recording
 
 
 def sync_paste_occurrences(occurrences, capture_fn=None):

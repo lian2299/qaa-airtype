@@ -1770,13 +1770,21 @@ def update_input_preview():
     """更新输入预览，并为新出现的粘贴热词捕获当时的剪贴板。"""
     try:
         data = request.get_json(silent=True) or {}
-        raw_text = data.get('text', '')
-        if not isinstance(raw_text, str):
-            raw_text = '' if raw_text is None else str(raw_text)
-        text = state.set_input_preview(raw_text)
-        rules = validate_keyword_actions(load_config().get('keyword_actions', []))
-        occurrences = get_paste_occurrences(raw_text, rules)
-        state.sync_paste_occurrences(occurrences)
+        if 'recording' in data:
+            if not isinstance(data['recording'], bool):
+                return {'success': False, 'error': 'recording must be a boolean'}, 400
+            state.set_input_recording(data['recording'])
+        if 'text' in data or 'recording' not in data:
+            raw_text = data.get('text', '')
+            if not isinstance(raw_text, str):
+                raw_text = '' if raw_text is None else str(raw_text)
+            text = state.set_input_preview(raw_text)
+            rules = validate_keyword_actions(load_config().get('keyword_actions', []))
+            occurrences = get_paste_occurrences(raw_text, rules)
+            state.sync_paste_occurrences(occurrences)
+        else:
+            text, _ = state.get_input_preview()
+            raw_text = text
 
         handler = input_preview_update_handler
         if handler:
@@ -2341,7 +2349,8 @@ class ServerApp:
     def schedule_input_preview_update(self, text):
         """Thread-safe entry point used by Flask routes to update the desktop input indicator."""
         try:
-            self.root.after(0, lambda value=text: self.update_input_preview_overlay(value))
+            recording = state.get_input_recording()
+            self.root.after(0, lambda value=text, active=recording: self.update_input_preview_overlay(value, active))
         except tk.TclError:
             pass
 
@@ -2472,17 +2481,18 @@ class ServerApp:
         y = max(8, screen_height - height - 90)
         win.geometry(f"{width}x{height}+{x}+{y}")
 
-    def update_input_preview_overlay(self, text):
+    def update_input_preview_overlay(self, text, recording=False):
         """Show, update, or hide the bottom-center desktop input indicator."""
         self._ensure_input_preview_window()
         if not self.input_preview_window:
             return
 
-        if not (text or '').strip():
+        if not (text or '').strip() and not recording:
             self.input_preview_window.withdraw()
             return
 
-        self.input_preview_text_label.config(text=self._format_input_preview_text(text))
+        display = text if (text or '').strip() else '正在录音，等待识别文字…'
+        self.input_preview_text_label.config(text=self._format_input_preview_text(display))
         self._position_input_preview_window()
         self.input_preview_window.deiconify()
         self.input_preview_window.attributes("-topmost", True)
@@ -2899,6 +2909,7 @@ class ServerApp:
                 pass
 
         self.active_port = None
+        state.set_input_recording(False)
         state.clear_input_preview()
         try:
             if self.input_preview_window and self.input_preview_window.winfo_exists():

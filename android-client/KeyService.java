@@ -28,6 +28,8 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
     ToneGenerator tone;
     long deadline, lastFocusAt, sessionAt, stopFrameLoggedAt, activityLaunchAt, microphoneStoppedAt;
     boolean tapped, stopClicked;
+    boolean pcRecording;
+    String pcRecordingUrl;
     volatile boolean gesturePending;
     int oldKeyboardMode;
     final Runnable tick = this::advance;
@@ -115,6 +117,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
                 sessionAt = now; microphoneStoppedAt = 0; tapped = false;
                 remote.main.removeCallbacks(remote.expireVoice); remote.voiceArmed = true; remote.keepAwake(true);
                 log("MANUAL_READY mic=" + recordingCount()); signal(true);
+                syncPcRecording(true);
                 status("正在收音 · 点击豆包结束或按 F9 结束", true);
             }
             schedule(150); return;
@@ -150,6 +153,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
                 }
             } else if (frame != null && frame.recording && recordingCount() > 0) {
                 log("READY latency=" + (now - sessionAt) + " mic=" + recordingCount());
+                syncPcRecording(true);
                 if (session.ready() == KeySession.Command.STOP) { stopRecording(); return; }
                 signal(true);
                 log("SIGNAL latency=" + (SystemClock.uptimeMillis() - sessionAt) + " key_latency=" + (SystemClock.uptimeMillis() - session.downAt));
@@ -199,6 +203,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         status("正在结束语音…", false); log("STOP_REQUEST"); schedule(0);
     }
     void finish(String message) {
+        syncPcRecording(false);
         generation++;
         main.removeCallbacks(tick); session.reset(SystemClock.uptimeMillis());
         if (RemoteActivity.instance != null) {
@@ -209,6 +214,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         schedule(150);
     }
     void fail(String message) {
+        syncPcRecording(false);
         generation++;
         main.removeCallbacks(tick);
         if (tapped && RemoteActivity.instance != null && RemoteActivity.instance.resumed && latestFrame != null) performGlobalAction(GLOBAL_ACTION_BACK);
@@ -218,6 +224,12 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         schedule(150);
     }
     void transferFailed() { signal(false); log("TRANSFER_UNCONFIRMED"); }
+    void syncPcRecording(boolean active) {
+        if (pcRecording == active) return;
+        pcRecording = active;
+        if (active) pcRecordingUrl = getSharedPreferences("settings", 0).getString("url", MainActivity.DEFAULT_URL);
+        ServerClient.recording(pcRecordingUrl, active, ok -> log("PC_RECORDING active=" + active + " success=" + ok));
+    }
     void signal(boolean ok) {
         if (tone != null) tone.startTone(ok ? ToneGenerator.TONE_PROP_ACK : ToneGenerator.TONE_PROP_NACK, ok ? 100 : 350);
         Vibrator vibrator = getSystemService(Vibrator.class);
@@ -371,6 +383,7 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         if (session.pressed && id == session.deviceId && session.up(SystemClock.uptimeMillis(), true) == KeySession.Command.STOP) stopRecording();
     }
     @Override public void onDestroy() {
+        syncPcRecording(false);
         generation++;
         unregisterReceiver(diagnostic);
         if (inspectorThread != null) inspectorThread.quitSafely();

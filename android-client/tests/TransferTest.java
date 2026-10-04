@@ -35,6 +35,22 @@ public class TransferTest extends Instrumentation {
             getTargetContext().startActivity(new Intent(getTargetContext(), RemoteActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK));
             await(() -> RemoteActivity.instance != null && RemoteActivity.instance.resumed, "native editor open");
             runOnMainSync(() -> remote = RemoteActivity.instance);
+            mode("ok"); prepare();
+            AtomicBoolean recordingSynced = new AtomicBoolean();
+            runOnMainSync(() -> ServerClient.recording(BASE, true, recordingSynced::set));
+            await(recordingSynced::get, "recording start synced before text");
+            JSONArray recordingEvents = events();
+            check(recordingEvents.length() == 1 && recordingEvents.getJSONObject(0).getString("path").equals("/input_preview") &&
+                recordingEvents.getJSONObject(0).getJSONObject("data").getBoolean("recording") &&
+                !recordingEvents.getJSONObject(0).getJSONObject("data").has("text") && types(recordingEvents) == 0,
+                "recording start is sent without waiting for text or sending a PC paste");
+            recordingSynced.set(false);
+            runOnMainSync(() -> ServerClient.recording(BASE, false, recordingSynced::set));
+            await(recordingSynced::get, "empty recording end synced");
+            recordingEvents = events();
+            check(recordingEvents.length() == 2 && !recordingEvents.getJSONObject(1).getJSONObject("data").getBoolean("recording") &&
+                !recordingEvents.getJSONObject(1).getJSONObject("data").has("text"), "recording end does not clear the PC preview text");
+
             mode("ok"); prepare(); compose("原生提交测试");
             await(() -> !remote.sending && remote.editor.length() == 0, "successful send");
             JSONArray events = events();

@@ -28,12 +28,19 @@ def register_routes(app, html_template):
         """Update frontend input preview state without sending text."""
         try:
             data = request.get_json(silent=True) or {}
-            raw_text = data.get('text', '')
-            if not isinstance(raw_text, str):
-                raw_text = '' if raw_text is None else str(raw_text)
-            text = state.set_input_preview(raw_text)
-            rules = validate_keyword_actions(load_config().get('keyword_actions', []))
-            state.sync_paste_occurrences(get_paste_occurrences(raw_text, rules))
+            if 'recording' in data:
+                if not isinstance(data['recording'], bool):
+                    return {'success': False, 'error': 'recording must be a boolean'}, 400
+                state.set_input_recording(data['recording'])
+            if 'text' in data or 'recording' not in data:
+                raw_text = data.get('text', '')
+                if not isinstance(raw_text, str):
+                    raw_text = '' if raw_text is None else str(raw_text)
+                text = state.set_input_preview(raw_text)
+                rules = validate_keyword_actions(load_config().get('keyword_actions', []))
+                state.sync_paste_occurrences(get_paste_occurrences(raw_text, rules))
+            else:
+                raw_text, _ = state.get_input_preview()
             return {'success': True, 'length': len(raw_text)}
         except Exception as e:
             print(f"Error in update_input_preview: {e}")

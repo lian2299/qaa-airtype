@@ -71,6 +71,14 @@ final class ServerClient {
             if (reply != null) main.post(() -> reply.done(ok));
         });
     }
+    static void recording(String base, boolean active, Reply reply) {
+        network.execute(() -> {
+            JSONObject data = new JSONObject();
+            try { data.put("recording", active); } catch (Exception ignored) {}
+            boolean ok = postNow(base, "/input_preview", data);
+            if (reply != null) main.post(() -> reply.done(ok));
+        });
+    }
     static void send(String base, String draft, Runnable submitted, Reply reply) {
         network.execute(() -> {
             boolean ok = postNow(base, "/input_preview", text(draft)) && postNow(base, "/type", text(draft + " "), submitted);
