@@ -23,7 +23,9 @@ public class RemoteActivity extends Activity {
     static final int INK = Color.rgb(29, 46, 43), MUTED = Color.rgb(103, 119, 114), ACCENT = Color.rgb(24, 112, 91);
     static RemoteActivity instance;
     VoiceEditor editor;
-    TextView banner, transfer;
+    ShizukuVoice shizukuVoice;
+    TextView banner, transfer, connections;
+    final Runnable refreshConnections = () -> connections.setText(ConnectionStatus.summary());
     boolean resumed, serverReady, probing, sending, voiceArmed;
     long probedAt;
     String error = "", lastPreview = "", probedUrl = "";
@@ -33,11 +35,13 @@ public class RemoteActivity extends Activity {
     long lastSentSoundAt;
     Handler main = new Handler(Looper.getMainLooper());
     Runnable sendFinal = () -> {
-        if (voiceArmed && !editor.composing && BaseInputConnection.getComposingSpanStart(editor.getText()) < 0) sendDraft();
+        if (voiceArmed && (shizukuVoice == null || !shizukuVoice.recording)
+                && !editor.composing && BaseInputConnection.getComposingSpanStart(editor.getText()) < 0) sendDraft();
     };
     Runnable expireVoice = () -> voiceArmed = false;
     @Override public void onCreate(Bundle state) {
         super.onCreate(state); instance = this; setTurnScreenOn(true);
+        shizukuVoice = new ShizukuVoice(this);
         loadSentSound();
         if (Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
         WindowManager.LayoutParams attributes = getWindow().getAttributes();
@@ -58,6 +62,8 @@ public class RemoteActivity extends Activity {
         layout.addView(header, headerParams);
         banner = new TextView(this); banner.setTextSize(15); banner.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         banner.setGravity(Gravity.CENTER_VERTICAL); banner.setPadding(dp(14), dp(12), dp(14), dp(12)); layout.addView(banner);
+        connections = new TextView(this); connections.setTextSize(12); connections.setTextColor(MUTED);
+        connections.setPadding(dp(2), dp(8), dp(2), 0); layout.addView(connections);
         transfer = new TextView(this); transfer.setTextSize(12); transfer.setTextColor(MUTED);
         transfer.setPadding(dp(2), dp(8), dp(2), dp(12)); transfer.setText("短按 F9 开始 · 再按结束 · 长按松开结束"); layout.addView(transfer);
         LinearLayout input = new LinearLayout(this); input.setOrientation(LinearLayout.VERTICAL);
@@ -255,6 +261,7 @@ public class RemoteActivity extends Activity {
         banner.setText((recording ? "●  " : "○  ") + text);
         banner.setTextColor(recording ? Color.WHITE : ACCENT);
         banner.setBackground(surface(recording ? ACCENT : Color.rgb(228, 240, 234), Color.TRANSPARENT, 14));
+        ConnectionStatus.status(this, text);
     }
     void keepAwake(boolean keep) {
         if (keep) getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
@@ -263,6 +270,8 @@ public class RemoteActivity extends Activity {
     @Override public void onNewIntent(Intent intent) { super.onNewIntent(intent); setIntent(intent); probe(); focusInput(); }
     @Override public void onResume() {
         super.onResume(); resumed = true; instance = this; probe(); focusInput();
+        shizukuVoice.resume();
+        ConnectionStatus.watch(this, refreshConnections);
         if (KeyService.instance != null) KeyService.instance.wakeStartup();
     }
     @Override public void onWindowFocusChanged(boolean focused) {
@@ -270,9 +279,12 @@ public class RemoteActivity extends Activity {
         if (focused) { enterFullscreen(); focusInput(); if (KeyService.instance != null) KeyService.instance.wakeStartup(); }
     }
     @Override public void onPause() {
+        shizukuVoice.pause();
         resumed = false; getSharedPreferences("settings", 0).edit().putString("draft", editor.getText().toString()).apply(); super.onPause();
+        ConnectionStatus.unwatch(refreshConnections);
     }
     @Override public void onDestroy() {
+        shizukuVoice.destroy();
         if (instance == this) instance = null; main.removeCallbacks(sendFinal);
         main.removeCallbacks(expireVoice);
         if (sendSounds != null) { sendSounds.release(); sendSounds = null; }

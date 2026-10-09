@@ -31,7 +31,7 @@ if ($manufacturer -eq 'Xiaomi') {
     if (!(Test-Path -LiteralPath $permissionBackup)) { $before | Set-Content -LiteralPath $permissionBackup }
     Run-Adb @('shell','cmd','appops','set','local.qaa.airtype','10021','allow')
 }
-Run-Adb @('shell','am','start','-n','local.qaa.airtype/.MainActivity')
+Run-Adb @('shell','am','start','-n','local.qaa.airtype/.RemoteActivity')
 if ($manufacturer -eq 'Xiaomi') {
     # Package replacement observers can reset the permission asynchronously.
     # Allow two seconds for them, then confirm three consecutive readbacks.

@@ -1,4 +1,4 @@
-param([Parameter(Mandatory = $true)][string]$Serial)
+param([Parameter(Mandatory = $true)][string]$Serial, [switch]$ShizukuOnly)
 $ErrorActionPreference = 'Stop'
 $sdkRoot = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { 'C:\Android\Sdk' }
 $jdkRoot = 'C:\Program Files\Microsoft\jdk-17.0.20.8-hotspot'
@@ -6,6 +6,7 @@ $buildTools = Join-Path $sdkRoot 'build-tools\35.0.0'
 $androidJar = Join-Path $sdkRoot 'platforms\android-35\android.jar'
 $adb = Join-Path $sdkRoot 'platform-tools\adb.exe'
 $enabledBefore = (& $adb -s $Serial shell settings get secure enabled_accessibility_services).Trim()
+[xml]$settingsBefore = (& $adb -s $Serial shell run-as local.qaa.airtype cat shared_prefs/settings.xml) -join "`n"
 . "$PSScriptRoot\..\adb-install.ps1"
 $buildRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..\.local-build\airtype-keys'))
 $outputDir = Join-Path $buildRoot 'instrumentation'
@@ -15,7 +16,8 @@ function Run-Native([string]$program, [string[]]$arguments) {
     if ($LASTEXITCODE -ne 0) { throw "$program failed: $LASTEXITCODE" }
 }
 Run-Native "$buildTools\aapt.exe" @('package','-f','-M',"$PSScriptRoot\AndroidManifest.xml",'-I',$androidJar,'-F',"$outputDir\unsigned.apk")
-Run-Native "$jdkRoot\bin\javac.exe" @('-encoding','UTF-8','-source','8','-target','8','-Xlint:-options','-classpath',"$androidJar;$buildRoot\classes",'-d',"$outputDir\classes","$PSScriptRoot\TransferTest.java")
+$shizukuJars = @(Get-ChildItem -LiteralPath "$buildRoot\shizuku-deps" -Filter '*.jar' | ForEach-Object FullName)
+Run-Native "$jdkRoot\bin\javac.exe" @('-encoding','UTF-8','-source','8','-target','8','-Xlint:-options','-classpath',("$androidJar;$buildRoot\classes;" + ($shizukuJars -join ';')),'-d',"$outputDir\classes","$PSScriptRoot\TransferTest.java","$PSScriptRoot\ShizukuTest.java")
 $classFiles = @(Get-ChildItem "$outputDir\classes" -Recurse -Filter '*.class' | ForEach-Object FullName)
 $previousJavaHome = $env:JAVA_HOME
 $previousPath = $env:PATH
@@ -31,9 +33,18 @@ try {
         Run-Native $adb @('-s',$Serial,'shell','cmd','appops','set','local.qaa.airtype','10021','allow')
     }
     Run-Native $adb @('-s',$Serial,'reverse','tcp:15001','tcp:15001')
-    $result = & $adb -s $Serial shell am instrument -w local.qaa.airtype.tests/local.qaa.airtype.TransferTest
+    $testClass = 'TransferTest'
+    if ($ShizukuOnly) {
+        $other = @($enabledBefore -split ':' | Where-Object { $_ -and $_ -notlike 'local.qaa.airtype/*' }) -join ':'
+        $disabledValue = if ($other) { $other } else { 'null' }
+        Run-Native $adb @('-s',$Serial,'shell','settings','put','secure','enabled_accessibility_services',$disabledValue)
+        Start-Sleep -Milliseconds 500
+        $testClass = 'ShizukuTest'
+    }
+    $result = & $adb -s $Serial shell am instrument -w "local.qaa.airtype.tests/local.qaa.airtype.$testClass" | Tee-Object -FilePath "$outputDir\result.txt"
     $result | Tee-Object -FilePath "$outputDir\result.txt"
-    if ($LASTEXITCODE -ne 0 -or !($result -match 'TransferTest: 26 checks passed')) { throw 'Device transfer checks failed' }
+    $expectedResult = if ($ShizukuOnly) { 'ShizukuTest: 7 checks passed' } else { 'TransferTest: 26 checks passed' }
+    if ($LASTEXITCODE -ne 0 -or !($result -match $expectedResult)) { throw 'Device transfer checks failed' }
 } finally {
     $env:JAVA_HOME = $previousJavaHome; $env:PATH = $previousPath
     & $adb -s $Serial reverse --remove tcp:15001 | Out-Null
@@ -67,4 +78,11 @@ try {
         if (!$restored) { throw 'F9 accessibility service did not reconnect after device tests' }
         Write-Output 'F9 accessibility service verified: bound, no crashed entry'
     }
+    [xml]$settingsAfter = (& $adb -s $Serial shell run-as local.qaa.airtype cat shared_prefs/settings.xml) -join "`n"
+    foreach ($name in @('url','draft')) {
+        $beforeValue = $settingsBefore.SelectSingleNode("/map/string[@name='$name']").InnerText
+        $afterValue = $settingsAfter.SelectSingleNode("/map/string[@name='$name']").InnerText
+        if ($beforeValue -ne $afterValue) { throw "Device checks did not restore $name" }
+    }
+    Write-Output 'Device settings verified: URL and draft restored'
 }

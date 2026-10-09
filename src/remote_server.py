@@ -2364,7 +2364,7 @@ class ServerApp:
         win.configure(bg="#111827")
         win.attributes("-topmost", True)
         try:
-            win.attributes("-alpha", 0.78)
+            win.attributes("-alpha", 0.60)
         except tk.TclError:
             pass
         try:
@@ -2413,24 +2413,45 @@ class ServerApp:
         try:
             win = self.input_preview_window
             win.update_idletasks()
-            hwnd = win.winfo_id()
             user32 = ctypes.windll.user32
+            from ctypes import wintypes
+
+            user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+            user32.GetAncestor.restype = wintypes.HWND
+            user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+            user32.GetWindowLongW.restype = wintypes.LONG
+            user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, wintypes.LONG]
+            user32.SetWindowLongW.restype = wintypes.LONG
+            user32.SetWindowPos.argtypes = [
+                wintypes.HWND, wintypes.HWND, ctypes.c_int, ctypes.c_int,
+                ctypes.c_int, ctypes.c_int, wintypes.UINT,
+            ]
+            user32.SetWindowPos.restype = wintypes.BOOL
+
+            # Tk's widget HWND is inside a native wrapper. Mouse transparency
+            # must be set on that top-level layered window, not the child.
+            GA_ROOT = 2
+            hwnd = user32.GetAncestor(win.winfo_id(), GA_ROOT)
+            if not hwnd:
+                raise ctypes.WinError()
 
             GWL_EXSTYLE = -20
             WS_EX_TOPMOST = 0x00000008
             WS_EX_TOOLWINDOW = 0x00000080
             WS_EX_TRANSPARENT = 0x00000020
+            WS_EX_LAYERED = 0x00080000
             WS_EX_NOACTIVATE = 0x08000000
             HWND_TOPMOST = -1
             SWP_NOSIZE = 0x0001
             SWP_NOMOVE = 0x0002
             SWP_NOACTIVATE = 0x0010
+            SWP_FRAMECHANGED = 0x0020
 
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
             user32.SetWindowLongW(
                 hwnd,
                 GWL_EXSTYLE,
-                style | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+                style | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
             )
             user32.SetWindowPos(
                 hwnd,
@@ -2439,7 +2460,7 @@ class ServerApp:
                 0,
                 0,
                 0,
-                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             )
         except Exception as e:
             print(f"Input preview window style failed: {e}")
@@ -2496,8 +2517,8 @@ class ServerApp:
         self._position_input_preview_window()
         self.input_preview_window.deiconify()
         self.input_preview_window.attributes("-topmost", True)
-        self._apply_input_preview_window_styles()
         self.input_preview_window.lift()
+        self._apply_input_preview_window_styles()
 
     def _set_service_status(self, text, color="#6b7280"):
         """Update the persistent service status indicator."""

@@ -18,6 +18,7 @@ import android.content.res.ColorStateList;
 public class MainActivity extends Activity {
     static final String DEFAULT_URL = "http://192.168.31.8:15000/";
     TextView status;
+    final Runnable refreshConnections = () -> refresh();
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
         if (android.os.Build.VERSION.SDK_INT >= 30) getWindow().setDecorFitsSystemWindows(false);
@@ -77,6 +78,10 @@ public class MainActivity extends Activity {
         accessHelp.setLineSpacing(dp(3), 1); addSection(accessibility, accessHelp, 12);
         Button access = button("打开无障碍设置", false); accessibility.addView(access, new LinearLayout.LayoutParams(-1, dp(48)));
         access.setOnClickListener(v -> startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)));
+        Button shizuku = button("授权 Shizuku", false);
+        LinearLayout.LayoutParams shizukuParams = new LinearLayout.LayoutParams(-1, dp(48)); shizukuParams.topMargin = dp(8);
+        accessibility.addView(shizuku, shizukuParams);
+        shizuku.setOnClickListener(v -> { ShizukuVoice.requestPermission(); refresh(); });
         addSection(layout, accessibility, 14);
 
         LinearLayout shortcuts = card("按键说明");
@@ -165,12 +170,13 @@ public class MainActivity extends Activity {
     }
     void refresh() {
         boolean connected = KeyService.instance != null;
-        status.setText((connected ? "● 服务已连接\n" : "○ 服务未连接\n") +
+        status.setText(ConnectionStatus.summary() + "\n" +
             getSharedPreferences("settings", 0).getString("status", "等待 F9"));
         status.setTextColor(connected ? RemoteActivity.ACCENT : RemoteActivity.MUTED);
     }
     @Override public void onWindowFocusChanged(boolean focused) { super.onWindowFocusChanged(focused); if (focused) enterFullscreen(); }
-    @Override public void onResume() { super.onResume(); if (status != null) refresh(); }
+    @Override public void onResume() { super.onResume(); ConnectionStatus.watch(this, refreshConnections); }
+    @Override public void onPause() { ConnectionStatus.unwatch(refreshConnections); super.onPause(); }
     @Override public void onNewIntent(Intent intent) {
         super.onNewIntent(intent); setIntent(intent);
         if ("snapshot".equals(intent.getStringExtra("command")) && KeyService.instance != null) {

@@ -58,8 +58,6 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         try { tone = new ToneGenerator(AudioManager.STREAM_MUSIC, 65); } catch (RuntimeException ignored) {}
         oldKeyboardMode = getSoftKeyboardController().getShowMode();
         getSystemService(InputManager.class).registerInputDeviceListener(this, main);
-        NotificationChannel channel = new NotificationChannel("f9", "F9 语音状态", NotificationManager.IMPORTANCE_LOW);
-        channel.setSound(null, null); getSystemService(NotificationManager.class).createNotificationChannel(channel);
         status("等待 F9 · 短按免手持，长按松开结束", false); log("CONNECTED");
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(diagnostic, new IntentFilter("local.qaa.airtype.SNAPSHOT"), "android.permission.DUMP", main, Context.RECEIVER_EXPORTED);
         else registerReceiver(diagnostic, new IntentFilter("local.qaa.airtype.SNAPSHOT"), "android.permission.DUMP", main);
@@ -74,6 +72,12 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
     }
     void handleKey(int action, int repeat, long time, int device, boolean canceled) {
         log("KEY action=" + action + " repeat=" + repeat + " device=" + device + " dispatch_ms=" + (SystemClock.uptimeMillis() - time));
+        RemoteActivity remote = RemoteActivity.instance;
+        if (action == KeyEvent.ACTION_DOWN && repeat == 0 && session.phase == KeySession.Phase.IDLE
+                && remote != null && remote.shizukuVoice != null && remote.shizukuVoice.recording) {
+            // F9 still stops manually started speech when Shizuku owns its monitoring.
+            session.phase = KeySession.Phase.RECORDING; session.handsFree = true;
+        }
         KeySession.Command command = KeySession.Command.NONE;
         if (action == KeyEvent.ACTION_DOWN && repeat == 0) command = session.down(time, device);
         else if (action == KeyEvent.ACTION_UP) {
@@ -108,6 +112,9 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         long now = SystemClock.uptimeMillis(); RemoteActivity remote = RemoteActivity.instance;
         if (session.phase == KeySession.Phase.IDLE) {
             if (remote == null || !remote.resumed) return;
+            // Foreground direct speech prefers the independent shell observer.
+            // F9 start/stop and unavailable Shizuku retain the accessibility path.
+            if (remote.shizukuVoice != null && remote.shizukuVoice.ready) { schedule(150); return; }
             requestFrame();
             ImeFrame frame = latestFrame;
             // Direct taps on Doubao's speech control need the same arming and
@@ -236,12 +243,8 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         if (vibrator != null) vibrator.vibrate(VibrationEffect.createOneShot(ok ? 40 : 200, VibrationEffect.DEFAULT_AMPLITUDE));
     }
     void status(String value, boolean recording) {
-        getSharedPreferences("settings", 0).edit().putString("status", value).apply();
         if (RemoteActivity.instance != null) RemoteActivity.instance.showStatus(value, recording);
-        PendingIntent open = PendingIntent.getActivity(this, 0, new Intent(this, MainActivity.class), PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
-        getSystemService(NotificationManager.class).notify(9, new Notification.Builder(this, "f9")
-            .setSmallIcon(getResources().getIdentifier("icon", "drawable", getPackageName()))
-            .setContentTitle("F9 远程语音").setContentText(value).setContentIntent(open).setOngoing(true).setOnlyAlertOnce(true).build());
+        else ConnectionStatus.status(this, value);
     }
     static class ImeFrame {
         AccessibilityNodeInfo start, stop; boolean recording; Rect bounds = new Rect(), stopBounds = new Rect();
@@ -388,7 +391,8 @@ public class KeyService extends AccessibilityService implements InputManager.Inp
         unregisterReceiver(diagnostic);
         if (inspectorThread != null) inspectorThread.quitSafely();
         main.removeCallbacksAndMessages(null); getSystemService(InputManager.class).unregisterInputDeviceListener(this);
-        getSoftKeyboardController().setShowMode(oldKeyboardMode); getSystemService(NotificationManager.class).cancel(9);
-        if (tone != null) tone.release(); if (instance == this) instance = null; super.onDestroy();
+        getSoftKeyboardController().setShowMode(oldKeyboardMode);
+        if (tone != null) tone.release(); if (instance == this) instance = null;
+        ConnectionStatus.refresh(); super.onDestroy();
     }
 }
